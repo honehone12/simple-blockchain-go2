@@ -13,14 +13,14 @@ const (
 	ConsensusMessage
 )
 
-func (mk MessageKind) PackPayload(data interface{}) ([]byte, error) {
+func PackPayload(data interface{}, msgKinds ...byte) ([]byte, error) {
 	b, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
 	}
 
 	p := make([]byte, 0, len(b)+1)
-	p = append(p, byte(mk))
+	p = append(p, msgKinds...)
 	p = append(p, b...)
 	return p, nil
 }

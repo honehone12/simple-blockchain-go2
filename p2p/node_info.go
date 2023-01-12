@@ -25,7 +25,7 @@ func NewNodeInfo(port string, network NetworkKind) NodeInfo {
 	}
 }
 
-func (ni *NodeInfo) SameIp(other NodeInfo) bool {
+func (ni *NodeInfo) IsSameIp(other NodeInfo) bool {
 	return strings.Compare(ni.Ip4, other.Ip4) == 0
 }
 

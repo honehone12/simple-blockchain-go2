@@ -34,8 +34,6 @@ func VerifyTransferCall(call Call) bool {
 		return false
 	}
 
-	// TODO:
-	// check account balance !!
 	return param.Amount > 0 &&
 		param.Amount < common.GeneratorBalance &&
 		len(param.To) == common.PublicKeySize

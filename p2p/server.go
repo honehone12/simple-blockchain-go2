@@ -41,6 +41,7 @@ func (s *Server) listen() {
 	defer listener.Close()
 	log.Printf("listening at: %s\n", s.info.Ip4)
 
+	// here is very weak for fast inbound
 	for {
 		conn, err := listener.Accept()
 		if err != nil {

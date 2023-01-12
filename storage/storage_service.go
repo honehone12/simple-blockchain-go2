@@ -58,8 +58,7 @@ type StorageHandle interface {
 		ref []byte,
 	) <-chan common.Result[[]byte]
 
-	Put(bucket BucketKind, content DbContent,
-	) <-chan common.Result[[]byte]
+	Put(bucket BucketKind, content DbContent) <-chan common.Result[[]byte]
 }
 
 func NewStorageService(name string) (*StorageService, error) {
@@ -82,6 +81,7 @@ func (sts *StorageService) Run() {
 }
 
 func (sts *StorageService) FetchAllAccounts(mem memory.MemoryHandle) error {
+	i := 0
 	err := sts.db.innerDb.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sts.accountsBucket)
 		c := b.Cursor()
@@ -93,6 +93,7 @@ func (sts *StorageService) FetchAllAccounts(mem memory.MemoryHandle) error {
 				return err
 			}
 			mem.PutAccountState(k, &state)
+			i++
 		}
 		return nil
 	})
@@ -100,7 +101,7 @@ func (sts *StorageService) FetchAllAccounts(mem memory.MemoryHandle) error {
 		return err
 	}
 
-	log.Println("database fetched")
+	log.Printf("database fetched %d accounts\n", i)
 	return nil
 }
 

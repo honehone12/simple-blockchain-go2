@@ -14,7 +14,7 @@ type AccountState struct {
 type Account struct {
 	PublicKey []byte
 	State     AccountState
-	Timestamp int64
+	Timestamp int64 // time created or time last update ??
 }
 
 func (as *AccountState) Subtract(amount uint64) bool {

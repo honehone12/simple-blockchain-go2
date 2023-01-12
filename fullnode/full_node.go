@@ -8,10 +8,9 @@ import (
 )
 
 type FullNode struct {
-	node       *nodes.Node
-	memory     *memory.MemoryService
-	consensus  *consensus.ConsensusService
-	blockchain *blockchain.Blockchain
+	node      *nodes.Node
+	memory    *memory.MemoryService
+	consensus *consensus.ConsensusService
 }
 
 func NewFullNode(
@@ -22,17 +21,16 @@ func NewFullNode(
 ) (*FullNode, error) {
 	bc := blockchain.NewBlockchain()
 	ms := memory.NewMemoryService()
-	cs := consensus.NewConsensusService(consensusPort, ms)
-	n, err := nodes.NewNode(name, syncPort, rpcPort, ms)
+	n, err := nodes.NewNode(name, syncPort, rpcPort, ms, bc)
 	if err != nil {
 		return nil, err
 	}
+	cs := consensus.NewConsensusService(consensusPort, ms, n.SyncHandle(), bc)
 
 	return &FullNode{
-		node:       n,
-		memory:     ms,
-		consensus:  cs,
-		blockchain: bc,
+		node:      n,
+		memory:    ms,
+		consensus: cs,
 	}, nil
 }
 

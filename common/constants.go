@@ -3,7 +3,7 @@ package common
 const (
 	Tcp            = "tcp4"
 	Ip4Format      = "localhost:%s"
-	MaxPayloadSize = 512
+	MaxPayloadSize = 2048
 	PublicKeySize  = 32
 )
 

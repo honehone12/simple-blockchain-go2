@@ -2,6 +2,7 @@ package memory
 
 import (
 	"errors"
+	"log"
 	"simple-blockchain-go2/accounts"
 	"simple-blockchain-go2/common"
 	"simple-blockchain-go2/txs"
@@ -34,6 +35,7 @@ type StateMemRequest struct {
 type MemoryHandle interface {
 	AppendTx(tx *txs.Transaction)
 	RemoveTxs(keys []string)
+	ContainsTx(key []byte) bool
 
 	PutAccountState(key []byte, state *accounts.AccountState)
 	GetAccountState(key []byte) <-chan common.Result[accounts.AccountState]
@@ -65,6 +67,10 @@ func (ms *MemoryService) Run() {
 	go ms.run()
 }
 
+func (ms *MemoryService) ContainsTx(key []byte) bool {
+	return ms.mempool.Contains(base58.Encode(key))
+}
+
 func (ms *MemoryService) AppendTx(tx *txs.Transaction) {
 	req := MempoolRequest{
 		RequestKind: Append,
@@ -72,6 +78,7 @@ func (ms *MemoryService) AppendTx(tx *txs.Transaction) {
 		Keys:        nil,
 	}
 	ms.txCh <- req
+	log.Println("appending tx to mempool")
 }
 
 func (ms *MemoryService) RemoveTxs(keys []string) {

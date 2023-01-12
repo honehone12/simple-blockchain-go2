@@ -44,10 +44,46 @@ func (ps *P2pService) Run(fn func([]byte) error) {
 	go ps.onFail()
 }
 
+func (ps *P2pService) Self() NodeInfo {
+	return ps.server.Self()
+}
+
+func (ps *P2pService) Send(to NodeInfo, data []byte) {
+	if !to.IsSameIp(ps.server.Self()) {
+		ps.transporter.Send(to, data)
+	}
+}
+
+func (ps *P2pService) Broadcast(data []byte, except ...NodeInfo) {
+	for _, p := range ps.peers {
+		for _, exc := range except {
+			if !p.IsSameIp(exc) {
+				ps.transporter.Send(p, data)
+			}
+		}
+	}
+}
+
+func (ps *P2pService) LenPeers() int {
+	return len(ps.peers)
+}
+
 func (ps *P2pService) KnowsPeer(peer NodeInfo) bool {
 	return slices.ContainsFunc(ps.peers, func(p NodeInfo) bool {
-		return peer.SameIp(p)
+		return peer.IsSameIp(p)
 	})
+}
+
+func (ps *P2pService) PeerByIndex(idx int) *NodeInfo {
+	peerLen := len(ps.peers)
+	if peerLen == 0 {
+		return nil
+	}
+	if idx < 0 || idx > peerLen {
+		return nil
+	}
+
+	return &ps.peers[idx]
 }
 
 func (ps *P2pService) catch() {
@@ -68,7 +104,7 @@ func (ps *P2pService) onFail() {
 
 func (ps *P2pService) addPeer(peer NodeInfo) {
 	self := ps.server.Self()
-	if !ps.KnowsPeer(peer) && !self.SameIp(peer) {
+	if !ps.KnowsPeer(peer) && !self.IsSameIp(peer) {
 		log.Printf("%s is now known peer\n", peer.Ip4)
 		ps.peers = append(ps.peers, peer)
 	}
@@ -76,7 +112,7 @@ func (ps *P2pService) addPeer(peer NodeInfo) {
 
 func (ps *P2pService) removePeer(peer NodeInfo) {
 	idx := slices.IndexFunc(ps.peers, func(p NodeInfo) bool {
-		return peer.SameIp(p)
+		return peer.IsSameIp(p)
 	})
 	if idx >= 0 {
 		log.Printf("%s is out from peers\n", ps.peers[idx].Ip4)
@@ -102,7 +138,7 @@ func (ps *P2pService) handleInbound(conn net.Conn) error {
 	case WelcomeMessage:
 		err = ps.handleWelcome(raw[1:])
 	default:
-		err = ps.handlerFn(raw[1:])
+		err = ps.handlerFn(raw)
 	}
 	return err
 }

@@ -8,6 +8,7 @@ import (
 	"simple-blockchain-go2/accounts"
 	"simple-blockchain-go2/common"
 	"simple-blockchain-go2/memory"
+	"simple-blockchain-go2/nodes/sync"
 	"simple-blockchain-go2/p2p"
 	"simple-blockchain-go2/rpc"
 	"simple-blockchain-go2/storage"
@@ -18,18 +19,21 @@ type RpcServer struct {
 	server        *p2p.Server
 	memoryHandle  memory.MemoryHandle
 	storageHandle storage.StorageHandle
+	syncHandle    sync.TxBroadcaster
 }
 
 func NewRpcServer(
 	port string,
 	memory memory.MemoryHandle,
 	storage storage.StorageHandle,
+	sync sync.TxBroadcaster,
 ) *RpcServer {
 	s := p2p.NewServer(port, 0)
 	return &RpcServer{
 		server:        s,
 		memoryHandle:  memory,
 		storageHandle: storage,
+		syncHandle:    sync,
 	}
 }
 
@@ -67,7 +71,7 @@ func (rs *RpcServer) handleRpc(conn net.Conn) error {
 	var res []byte = nil
 	switch buff[0] {
 	case rpc.SifnedRpc:
-		res = rs.handleTransaction(buff[1:])
+		res, err = rs.handleTransaction(buff[1:])
 	case rpc.UnsignedRpc:
 		res, err = rs.handleCall(buff[1:])
 	default:
@@ -132,37 +136,47 @@ func (rs *RpcServer) handleCall(raw []byte) ([]byte, error) {
 	return nil, nil
 }
 
-func (rs *RpcServer) handleTransaction(raw []byte) []byte {
+func (rs *RpcServer) handleTransaction(raw []byte) ([]byte, error) {
 	tx := txs.Transaction{}
 	err := json.Unmarshal(raw, &tx)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	ok, err := tx.Verify()
 	if err != nil || !ok {
-		return nil
+		return nil, nil
 	}
 
 	call := rpc.Call{}
 	err = json.Unmarshal(tx.InnerData.Data, &call)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	switch call.Call {
 	case rpc.Airdrop:
 		if !rpc.VerifyAirdropCall(call) {
-			return nil
+			return nil, nil
 		}
 	case rpc.Transfer:
 		if !rpc.VerifyTransferCall(call) {
-			return nil
+			return nil, nil
 		}
+		// TODO:
+		// check account balance !!
 	default:
-		return nil
+		return nil, nil
+	}
+
+	if rs.memoryHandle.ContainsTx(tx.Hash[:]) {
+		return nil, nil
 	}
 
 	rs.memoryHandle.AppendTx(&tx)
-	return []byte("ok")
+	err = rs.syncHandle.BroadcastTx(&tx, []p2p.NodeInfo{})
+	if err != nil {
+		return nil, err
+	}
+	return []byte("ok"), nil
 }

@@ -23,14 +23,14 @@ func (ps *P2pService) localDiscovery(discoveryMin, discoveryMax int) error {
 	hello := HelloMsg{
 		From: self,
 	}
-	payload, err := HelloMessage.PackPayload(hello)
+	payload, err := PackPayload(hello, byte(HelloMessage))
 	if err != nil {
 		return err
 	}
 
 	for p := discoveryMin; p <= discoveryMax; p++ {
 		to := NewNodeInfo(strconv.Itoa(p), 0)
-		if self.SameIp(to) {
+		if self.IsSameIp(to) {
 			continue
 		}
 
@@ -60,7 +60,7 @@ func (ps *P2pService) handleJoin(raw []byte) error {
 		From:      ps.server.Self(),
 		KnownPeer: ps.peers,
 	}
-	payload, err := WelcomeMessage.PackPayload(welcom)
+	payload, err := PackPayload(welcom, byte(WelcomeMessage))
 	if err != nil {
 		return err
 	}
@@ -88,13 +88,13 @@ func (ps *P2pService) handleWelcome(raw []byte) error {
 		hello := HelloMsg{
 			From: self,
 		}
-		payload, err := HelloMessage.PackPayload(hello)
+		payload, err := PackPayload(hello, byte(HelloMessage))
 		if err != nil {
 			return err
 		}
 
 		for _, peer := range welcome.KnownPeer {
-			if !ps.KnowsPeer(peer) && !self.SameIp(peer) {
+			if !ps.KnowsPeer(peer) && !self.IsSameIp(peer) {
 				ps.transporter.Send(peer, payload)
 			}
 		}
