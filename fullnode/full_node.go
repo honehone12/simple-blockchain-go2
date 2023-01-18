@@ -1,7 +1,7 @@
 package fullnode
 
 import (
-	"simple-blockchain-go2/blockchain"
+	"simple-blockchain-go2/accounts/wallets"
 	"simple-blockchain-go2/consensus"
 	"simple-blockchain-go2/memory"
 	"simple-blockchain-go2/nodes"
@@ -11,6 +11,7 @@ type FullNode struct {
 	node      *nodes.Node
 	memory    *memory.MemoryService
 	consensus *consensus.ConsensusService
+	eCh       chan error
 }
 
 func NewFullNode(
@@ -19,26 +20,43 @@ func NewFullNode(
 	consensusPort,
 	rpcPort string,
 ) (*FullNode, error) {
-	bc := blockchain.NewBlockchain()
 	ms := memory.NewMemoryService()
-	n, err := nodes.NewNode(name, syncPort, rpcPort, ms, bc)
+	n, err := nodes.NewNode(name, syncPort, rpcPort, ms)
 	if err != nil {
 		return nil, err
 	}
-	cs := consensus.NewConsensusService(consensusPort, ms, n.SyncHandle(), bc)
+	w, err := wallets.NewWallet(name)
+	if err != nil {
+		return nil, err
+	}
+	cs := consensus.NewConsensusService(
+		consensusPort,
+		ms,
+		n.SyncHandle(),
+		n.Blockchain(),
+		w,
+		n.ExecuteHandle(),
+	)
 
 	return &FullNode{
 		node:      n,
 		memory:    ms,
 		consensus: cs,
+		eCh:       make(chan error),
 	}, nil
 }
 
 func (fn *FullNode) Run() error {
-	fn.consensus.Run()
+	go fn.catch()
 	fn.memory.Run()
+	fn.consensus.Run()
 	fn.node.Run()
 
+	err := <-fn.eCh
+	return err
+}
+
+func (fn *FullNode) catch() {
 	var err error
 	nodeECh := fn.node.E()
 	consECh := fn.consensus.E()
@@ -46,5 +64,5 @@ func (fn *FullNode) Run() error {
 	case err = <-nodeECh:
 	case err = <-consECh:
 	}
-	return err
+	fn.eCh <- err
 }

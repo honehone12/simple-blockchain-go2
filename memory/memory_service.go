@@ -5,6 +5,7 @@ import (
 	"log"
 	"simple-blockchain-go2/accounts"
 	"simple-blockchain-go2/common"
+	"simple-blockchain-go2/common/merkle"
 	"simple-blockchain-go2/txs"
 
 	"github.com/btcsuite/btcutil/base58"
@@ -27,18 +28,23 @@ type MempoolRequest struct {
 
 type StateMemRequest struct {
 	RequestKind
-	PublickKey []byte
-	State      *accounts.AccountState
-	ResultCh   chan<- common.Result[accounts.AccountState]
+	PublicKey []byte
+	State     *accounts.AccountState
+	ResultCh  chan<- *common.Result[accounts.AccountState]
 }
 
 type MemoryHandle interface {
+	LenTx() int
 	AppendTx(tx *txs.Transaction)
+	GetTxsForBlock() []txs.Transaction
 	RemoveTxs(keys []string)
 	ContainsTx(key []byte) bool
 
-	PutAccountState(key []byte, state *accounts.AccountState)
-	GetAccountState(key []byte) <-chan common.Result[accounts.AccountState]
+	PutAccountState(
+		key []byte, state *accounts.AccountState,
+	) <-chan *common.Result[accounts.AccountState]
+	GetAccountState(key []byte) <-chan *common.Result[accounts.AccountState]
+	GetStateHash() ([]byte, error)
 }
 
 type MemoryService struct {
@@ -58,13 +64,17 @@ func NewMemoryService() *MemoryService {
 				Balance: 0,
 			},
 		),
-		txCh:    make(chan MempoolRequest),
-		stateCh: make(chan StateMemRequest),
+		txCh:    make(chan MempoolRequest, 10),
+		stateCh: make(chan StateMemRequest, 10),
 	}
 }
 
 func (ms *MemoryService) Run() {
 	go ms.run()
+}
+
+func (ms *MemoryService) LenTx() int {
+	return ms.mempool.Len()
 }
 
 func (ms *MemoryService) ContainsTx(key []byte) bool {
@@ -81,6 +91,10 @@ func (ms *MemoryService) AppendTx(tx *txs.Transaction) {
 	log.Println("appending tx to mempool")
 }
 
+func (ms *MemoryService) GetTxsForBlock() []txs.Transaction {
+	return ms.mempool.GetTxsForBlock()
+}
+
 func (ms *MemoryService) RemoveTxs(keys []string) {
 	req := MempoolRequest{
 		RequestKind: Remove,
@@ -90,13 +104,22 @@ func (ms *MemoryService) RemoveTxs(keys []string) {
 	ms.txCh <- req
 }
 
+func (ms *MemoryService) GetStateHash() ([]byte, error) {
+	nodes, err := ms.stateMem.GetMerkleNodes()
+	if err != nil {
+		return nil, err
+	}
+	merkleRoot := merkle.NewMerkleTreeFromNodes(nodes)
+	return merkleRoot.RootNode.Data, nil
+}
+
 func (ms *MemoryService) GetAccountState(
 	key []byte,
-) <-chan common.Result[accounts.AccountState] {
-	resCh := make(chan common.Result[accounts.AccountState])
+) <-chan *common.Result[accounts.AccountState] {
+	resCh := make(chan *common.Result[accounts.AccountState])
 	req := StateMemRequest{
 		RequestKind: Get,
-		PublickKey:  key,
+		PublicKey:   key,
 		State:       nil,
 		ResultCh:    resCh,
 	}
@@ -106,23 +129,25 @@ func (ms *MemoryService) GetAccountState(
 
 func (ms *MemoryService) PutAccountState(
 	key []byte, state *accounts.AccountState,
-) {
+) <-chan *common.Result[accounts.AccountState] {
+	resCh := make(chan *common.Result[accounts.AccountState])
 	req := StateMemRequest{
 		RequestKind: Put,
-		PublickKey:  key,
+		PublicKey:   key,
 		State:       state,
-		ResultCh:    nil,
+		ResultCh:    resCh,
 	}
 	ms.stateCh <- req
+	return resCh
 }
 
 func (ms *MemoryService) run() {
 	for {
 		select {
-		case req := <-ms.txCh:
-			ms.handleTx(req)
-		case req := <-ms.stateCh:
-			ms.handleState(req)
+		case txReq := <-ms.txCh:
+			ms.handleTx(txReq)
+		case stateReq := <-ms.stateCh:
+			ms.handleState(stateReq)
 		}
 	}
 }
@@ -144,26 +169,32 @@ func (ms *MemoryService) handleTx(req MempoolRequest) {
 func (ms *MemoryService) handleState(req StateMemRequest) {
 	switch req.RequestKind {
 	case Get:
-		if req.PublickKey != nil && req.ResultCh != nil {
-			state, ok := ms.stateMem.Get(base58.Encode(req.PublickKey))
+		if req.PublicKey != nil && req.ResultCh != nil {
+			state, ok := ms.stateMem.Get(base58.Encode(req.PublicKey))
 			if ok {
-				req.ResultCh <- common.Result[accounts.AccountState]{
+				req.ResultCh <- &common.Result[accounts.AccountState]{
 					Value: *state,
 					Err:   nil,
 				}
+				return
 			} else {
-				req.ResultCh <- common.Result[accounts.AccountState]{
-					Value: accounts.AccountState{},
-					Err:   errors.New("not found the key"),
+				req.ResultCh <- &common.Result[accounts.AccountState]{
+					Value: accounts.AccountState{
+						Nonce:   0,
+						Balance: 0,
+					},
+					Err: errors.New("not found the key"),
 				}
+				return
 			}
 		}
 	case Put:
-		if req.PublickKey != nil && req.State != nil {
+		if req.PublicKey != nil && req.State != nil {
 			ms.stateMem.Put(
-				base58.Encode(req.PublickKey), *req.State,
+				base58.Encode(req.PublicKey), *req.State,
 			)
 		}
 	default:
 	}
+	req.ResultCh <- nil
 }

@@ -59,6 +59,8 @@ type StorageHandle interface {
 	) <-chan common.Result[[]byte]
 
 	Put(bucket BucketKind, content DbContent) <-chan common.Result[[]byte]
+	FetchAccounts(mem memory.MemoryHandle, pubKeys [][]byte) error
+	PushAccounts(mem memory.MemoryHandle, pubKeys [][]byte) error
 }
 
 func NewStorageService(name string) (*StorageService, error) {
@@ -70,7 +72,7 @@ func NewStorageService(name string) (*StorageService, error) {
 	}
 	return &StorageService{
 		db:             sdb,
-		reqCh:          make(chan StorageRequest),
+		reqCh:          make(chan StorageRequest, 10),
 		blocksBucket:   blkBucket,
 		accountsBucket: acntBucket,
 	}, nil
@@ -82,18 +84,22 @@ func (sts *StorageService) Run() {
 
 func (sts *StorageService) FetchAllAccounts(mem memory.MemoryHandle) error {
 	i := 0
+	chCache := make([]<-chan *common.Result[accounts.AccountState], 0)
 	err := sts.db.innerDb.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sts.accountsBucket)
 		c := b.Cursor()
 		var err error
-		state := accounts.AccountState{}
 		for k, v := c.First(); k != nil; k, v = c.Next() {
-			err = json.Unmarshal(v, &state)
-			if err == nil {
-				return err
+			if len(k) == common.PublicKeySize {
+				state := accounts.AccountState{}
+				err = json.Unmarshal(v, &state)
+				if err != nil {
+					return err
+				}
+				ch := mem.PutAccountState(k, &state)
+				chCache = append(chCache, ch)
+				i++
 			}
-			mem.PutAccountState(k, &state)
-			i++
 		}
 		return nil
 	})
@@ -101,8 +107,83 @@ func (sts *StorageService) FetchAllAccounts(mem memory.MemoryHandle) error {
 		return err
 	}
 
+	for j := 0; j < i; j++ {
+		<-chCache[j]
+	}
 	log.Printf("database fetched %d accounts\n", i)
 	return nil
+}
+
+func (sts *StorageService) FetchAccounts(
+	mem memory.MemoryHandle, pubKeys [][]byte,
+) error {
+	iter := len(pubKeys)
+	chCache := make([]<-chan *common.Result[accounts.AccountState], 0, iter)
+	err := sts.db.innerDb.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(sts.accountsBucket)
+		var err error
+		for _, pk := range pubKeys {
+			state := accounts.AccountState{
+				Nonce:   0,
+				Balance: 0,
+			}
+			raw := b.Get(pk)
+			if raw == nil {
+				log.Printf("account %x was not exist yet\n", pk)
+			} else {
+				err = json.Unmarshal(raw, &state)
+				if err != nil {
+					return err
+				}
+			}
+
+			ch := mem.PutAccountState(pk, &state)
+			chCache = append(chCache, ch)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	for i := 0; i < iter; i++ {
+		<-chCache[i]
+	}
+	log.Printf("database fetched %d accounts\n", iter)
+	return nil
+}
+
+func (sts *StorageService) PushAccounts(
+	mem memory.MemoryHandle, pubKeys [][]byte,
+) error {
+	iter := len(pubKeys)
+	chs := make([]<-chan *common.Result[accounts.AccountState], 0, iter)
+	for i := 0; i < iter; i++ {
+		ch := mem.GetAccountState(pubKeys[i])
+		chs = append(chs, ch)
+	}
+
+	return sts.db.innerDb.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(sts.accountsBucket)
+		var err error
+		var enc []byte
+		var res *common.Result[accounts.AccountState]
+		for i := 0; i < iter; i++ {
+			res = <-chs[i]
+			if res.Err != nil {
+				return res.Err
+			}
+			enc, err = json.Marshal(res.Value)
+			if err != nil {
+				return err
+			}
+			err = b.Put(pubKeys[i], enc)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (sts *StorageService) Get(
@@ -110,7 +191,7 @@ func (sts *StorageService) Get(
 	refKind ReferenceKind,
 	ref []byte,
 ) <-chan common.Result[[]byte] {
-	c := make(chan common.Result[[]byte], 1)
+	c := make(chan common.Result[[]byte])
 	req := StorageRequest{
 		RequestKind:   Get,
 		BucketKind:    bucket,
@@ -124,7 +205,7 @@ func (sts *StorageService) Get(
 
 func (sts *StorageService) Put(bucket BucketKind, content DbContent,
 ) <-chan common.Result[[]byte] {
-	c := make(chan common.Result[[]byte], 1)
+	c := make(chan common.Result[[]byte])
 	req := StorageRequest{
 		RequestKind: Put,
 		BucketKind:  bucket,

@@ -34,18 +34,12 @@ func NewTransaction(data []byte) Transaction {
 }
 
 func (tx *Transaction) CheckContents() bool {
-	if tx.InnerData.Timestamp <= 0 ||
-		tx.InnerData.Data == nil ||
-		len(tx.InnerData.Data) == 0 ||
-		len(tx.InnerData.Data) > common.MaxPayloadSize ||
-		tx.InnerData.PublicKey == nil ||
-		len(tx.InnerData.PublicKey) != common.PublicKeySize ||
-		tx.InnerData.Signature == nil ||
-		len(tx.InnerData.Signature) == 0 {
-
-		return false
-	}
-	return true
+	return tx.InnerData.Timestamp > 0 &&
+		tx.InnerData.Data != nil && len(tx.InnerData.Data) > 0 &&
+		len(tx.InnerData.Data) <= common.MaxPayloadSize &&
+		tx.InnerData.PublicKey != nil &&
+		len(tx.InnerData.PublicKey) == common.PublicKeySize &&
+		tx.InnerData.Signature != nil && len(tx.InnerData.Signature) > 0
 }
 
 func (tx *Transaction) Verify() (bool, error) {

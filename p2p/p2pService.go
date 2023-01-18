@@ -38,10 +38,10 @@ func (ps *P2pService) E() <-chan error {
 }
 
 func (ps *P2pService) Run(fn func([]byte) error) {
-	ps.handlerFn = fn
-	ps.server.Listen(ps.handleInbound)
 	go ps.catch()
 	go ps.onFail()
+	ps.handlerFn = fn
+	ps.server.Listen(ps.handleInbound)
 }
 
 func (ps *P2pService) Self() NodeInfo {

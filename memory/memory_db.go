@@ -86,13 +86,15 @@ func (md *MemoryDb[C]) GetMerkleNodes() ([]*merkle.MerkleNode, error) {
 		i++
 	}
 
-	fake, err := md.fakeContent.getMerkleNode(fakeKey)
-	if err != nil {
-		return nil, err
-	}
-	for i < total {
-		merkle[i] = fake
-		i++
+	if i < total {
+		fake, err := md.fakeContent.getMerkleNode(fakeKey)
+		if err != nil {
+			return nil, err
+		}
+		for i < total {
+			merkle[i] = fake
+			i++
+		}
 	}
 	return merkle, nil
 }

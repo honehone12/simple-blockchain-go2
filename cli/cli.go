@@ -90,7 +90,8 @@ func Run() error {
 			if err != nil {
 				return err
 			}
-			return n.Run()
+			err = n.Run()
+			return err
 		}
 	case "client":
 		switch os.Args[2] {

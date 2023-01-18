@@ -9,6 +9,7 @@ import (
 	"simple-blockchain-go2/common"
 	"simple-blockchain-go2/memory"
 	"simple-blockchain-go2/p2p"
+	"simple-blockchain-go2/rpc"
 	"simple-blockchain-go2/storage"
 	"simple-blockchain-go2/txs"
 	"sync/atomic"
@@ -36,7 +37,7 @@ type SyncService struct {
 	eCh chan error
 
 	isSyncing        atomic.Bool
-	blockStoredEvent *common.BlockchainEvent
+	blockStoredEvent *common.BlockchainEvent[*blocks.Block]
 }
 
 func NewSyncService(
@@ -44,7 +45,7 @@ func NewSyncService(
 	storage storage.StorageHandle,
 	memory memory.MemoryHandle,
 	bcInfo blockchain.BlockchainInfo,
-	onBlockStored *common.BlockchainEvent,
+	onBlockStored *common.BlockchainEvent[*blocks.Block],
 ) *SyncService {
 	return &SyncService{
 		p2pService:       p2p.NewP2pService(port, p2p.SyncNode),
@@ -63,9 +64,9 @@ func (sys *SyncService) E() <-chan error {
 }
 
 func (sys *SyncService) Run() {
+	go sys.catch()
 	sys.isSyncing.Store(false)
 	sys.p2pService.Run(sys.handleSyncMessage)
-	go sys.catch()
 	sys.p2pService.Discover(
 		p2p.DiscoveryConfig{
 			PortMin: 3000,
@@ -89,7 +90,7 @@ func (sys *SyncService) BroadcastTx(tx *txs.Transaction, origin []p2p.NodeInfo) 
 		return err
 	}
 	sys.p2pService.Broadcast(payload, origin...)
-	log.Println("broadcasting tx")
+	log.Println("broadcasting tx...")
 	return nil
 }
 
@@ -141,10 +142,18 @@ func (sys *SyncService) sync(target uint64) {
 				}
 
 				// put block
+				// TODO:
+				// execute block txs
 				putCh := sys.storageHandle.Put(storage.Blocks, res.Value)
 				putres := <-putCh
 				if putres.Err != nil {
 					sys.eCh <- putres.Err
+					return
+				}
+				err := sys.blockStoredEvent.Event(res.Value)
+				if err != nil {
+					sys.eCh <- err
+					return
 				}
 				log.Printf("block sync %d done\n", cache)
 				cache++
@@ -157,7 +166,7 @@ func (sys *SyncService) sync(target uint64) {
 		}
 	}
 	sys.isSyncing.Swap(false)
-	sys.blockStoredEvent.Event()
+	log.Println("all block sync done")
 }
 
 func (sys *SyncService) blockRequest(
@@ -173,7 +182,10 @@ func (sys *SyncService) blockRequest(
 		msg, byte(p2p.SyncMessage), byte(BlockRequestMessage),
 	)
 	if err != nil {
-		c <- common.Result[*blocks.Block]{Err: err, Value: nil}
+		c <- common.Result[*blocks.Block]{
+			Err:   err,
+			Value: nil,
+		}
 		return
 	}
 
@@ -280,7 +292,9 @@ func (sys *SyncService) handleBlockReq(raw []byte) error {
 		return err
 	}
 	resmsg.From = sys.p2pService.Self()
-	payload, err := p2p.PackPayload(resmsg, byte(p2p.SyncMessage), byte(BlockResponseMessage))
+	payload, err := p2p.PackPayload(
+		resmsg, byte(p2p.SyncMessage), byte(BlockResponseMessage),
+	)
 	if err != nil {
 		return err
 	}
@@ -303,6 +317,16 @@ func (sys *SyncService) handleTx(raw []byte) error {
 	if !ok {
 		return nil
 	}
+
+	call := rpc.Call{}
+	err = json.Unmarshal(msg.Tx.InnerData.Data, &call)
+	if err != nil {
+		return nil
+	}
+	if !call.Verify() {
+		return nil
+	}
+
 	if slices.ContainsFunc(msg.Origins, func(n p2p.NodeInfo) bool {
 		return n.IsSameIp(sys.p2pService.Self())
 	}) {
@@ -313,6 +337,7 @@ func (sys *SyncService) handleTx(raw []byte) error {
 	}
 
 	sys.memoryHandle.AppendTx(&msg.Tx)
-	msg.Origins = append(msg.Origins, sys.p2pService.Self())
+	origins := msg.Origins
+	origins = append(origins, sys.p2pService.Self())
 	return sys.BroadcastTx(&msg.Tx, msg.Origins)
 }

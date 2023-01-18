@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"log"
-	"simple-blockchain-go2/accounts"
 	"simple-blockchain-go2/accounts/wallets"
 	"simple-blockchain-go2/blocks"
 	"simple-blockchain-go2/common"
@@ -57,6 +56,7 @@ func (gen *Generator) Generate() error {
 		Info: blocks.BlockInfo{
 			Height:    0,
 			Hash:      nil,
+			PublicKey: gen.wallet.PublicKey(),
 			Signature: nil,
 			Timestamp: time.Now().Unix(),
 		},
@@ -78,21 +78,5 @@ func (gen *Generator) Generate() error {
 		return res.Err
 	}
 	log.Printf("created genesis block hash:%x\n", hash)
-
-	generator := accounts.Account{
-		PublicKey: gen.wallet.PublicKey(),
-		State: accounts.AccountState{
-			Nonce:   0,
-			Balance: common.GeneratorBalance,
-		},
-		Timestamp: time.Now().Unix(),
-	}
-	resCh = gen.storageHandle.Put(storage.Accounts, &generator)
-	res = <-resCh
-	if res.Err != nil {
-		return res.Err
-	}
-
-	log.Println("genetator balance has set")
 	return nil
 }

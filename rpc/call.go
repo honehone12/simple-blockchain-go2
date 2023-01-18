@@ -11,3 +11,16 @@ func NewCall(call RpcKind, param []byte) Call {
 		Params: param,
 	}
 }
+
+func (c Call) Verify() bool {
+	switch c.Call {
+	case GetAccountState:
+		return VerifyGetAccountStateCall(c)
+	case Airdrop:
+		return VerifyAirdropCall(c)
+	case Transfer:
+		return VerifyTransferCall(c)
+	default:
+		return false
+	}
+}

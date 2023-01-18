@@ -11,7 +11,7 @@ type TxBundle struct {
 }
 
 func (txb *TxBundle) HashTransactions() ([]byte, error) {
-	if len(txb.Transactions) == 0 {
+	if txb.Transactions == nil || len(txb.Transactions) == 0 {
 		return nil, errors.New("emptry tx bundle")
 	}
 
@@ -24,9 +24,22 @@ func (txb *TxBundle) HashTransactions() ([]byte, error) {
 		raws = append(raws, enc)
 	}
 
-	mTree, err := merkle.NewMerkleTree(raws)
+	mTree, err := merkle.NewMerkleTreeFromRaw(raws)
 	if err != nil {
 		return nil, err
 	}
 	return mTree.RootNode.Data, nil
+}
+
+func (txb *TxBundle) Verify() bool {
+	if txb.Transactions == nil || len(txb.Transactions) == 0 {
+		return false
+	}
+	for _, tx := range txb.Transactions {
+		ok, err := tx.Verify()
+		if err != nil || !ok {
+			return false
+		}
+	}
+	return true
 }

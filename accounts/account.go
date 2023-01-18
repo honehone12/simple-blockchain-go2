@@ -2,7 +2,6 @@ package accounts
 
 import (
 	"encoding/json"
-	"log"
 	"simple-blockchain-go2/common"
 )
 
@@ -37,7 +36,6 @@ func (as *AccountState) Add(amount uint64) bool {
 }
 
 func (as *AccountState) CheckNonce(nonce uint64) bool {
-	log.Printf("checking nonce, received: %d expected: %d", nonce, as.Nonce)
 	ok := as.Nonce == nonce
 	if ok {
 		as.Nonce++

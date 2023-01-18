@@ -36,7 +36,7 @@ func NewMerkleNode(left, right *MerkleNode, data []byte) *MerkleNode {
 	return &mNode
 }
 
-func NewMerkleTree(data [][]byte) (*MerkleTree, error) {
+func NewMerkleTreeFromRaw(data [][]byte) (*MerkleTree, error) {
 	leafLen := len(data)
 	if !common.IsPowerOf2(leafLen) {
 		return nil, errors.New("data length has to be power of 2")
@@ -59,4 +59,18 @@ func NewMerkleTree(data [][]byte) (*MerkleTree, error) {
 	}
 	mTree := MerkleTree{level[0]}
 	return &mTree, nil
+}
+
+func NewMerkleTreeFromNodes(data []*MerkleNode) *MerkleTree {
+	level := data
+	for len(level) > 1 {
+		var newLevel []*MerkleNode
+		for j := 0; j < len(level); j += 2 {
+			n := NewMerkleNode(level[j], level[j+1], nil)
+			newLevel = append(newLevel, n)
+		}
+		level = newLevel
+	}
+	mTree := MerkleTree{level[0]}
+	return &mTree
 }

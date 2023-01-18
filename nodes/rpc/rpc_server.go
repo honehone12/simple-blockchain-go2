@@ -144,7 +144,10 @@ func (rs *RpcServer) handleTransaction(raw []byte) ([]byte, error) {
 	}
 
 	ok, err := tx.Verify()
-	if err != nil || !ok {
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, nil
 	}
 
@@ -153,21 +156,12 @@ func (rs *RpcServer) handleTransaction(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, nil
 	}
-
-	switch call.Call {
-	case rpc.Airdrop:
-		if !rpc.VerifyAirdropCall(call) {
-			return nil, nil
-		}
-	case rpc.Transfer:
-		if !rpc.VerifyTransferCall(call) {
-			return nil, nil
-		}
-		// TODO:
-		// check account balance !!
-	default:
+	if !call.Verify() {
 		return nil, nil
 	}
+
+	// TODO:
+	// check account balance !!
 
 	if rs.memoryHandle.ContainsTx(tx.Hash[:]) {
 		return nil, nil
@@ -178,5 +172,6 @@ func (rs *RpcServer) handleTransaction(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return []byte("ok"), nil
 }

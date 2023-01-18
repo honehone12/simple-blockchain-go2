@@ -5,6 +5,6 @@ type Result[T interface{}] struct {
 	Err   error
 }
 
-type BlockchainEvent struct {
-	Event func()
+type BlockchainEvent[T interface{}] struct {
+	Event func(t T) error
 }
