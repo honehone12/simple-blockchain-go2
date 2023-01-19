@@ -43,7 +43,7 @@ func (as *AccountState) CheckNonce(nonce uint64) bool {
 	return ok
 }
 
-func (as AccountState) ToBytes() ([]byte, error) {
+func (as *AccountState) ToBytes() ([]byte, error) {
 	return json.Marshal(as)
 }
 

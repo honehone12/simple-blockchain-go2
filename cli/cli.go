@@ -8,6 +8,8 @@ import (
 	"simple-blockchain-go2/clients"
 	"simple-blockchain-go2/fullnode"
 	"simple-blockchain-go2/genesis"
+
+	"github.com/btcsuite/btcutil/base58"
 )
 
 func printUsage() {
@@ -17,6 +19,7 @@ func printUsage() {
 	fmt.Println("  genesis -n name")
 	fmt.Println(" client")
 	fmt.Println("  new -n Name")
+	fmt.Println("  address -n Name")
 	fmt.Println("  balance -n Name -p Port")
 	fmt.Println("  airdrop -n Name -a Amount -p Port")
 	fmt.Println("  transfer -n Name -a Amount -t To -p Port")
@@ -48,6 +51,9 @@ func Run() error {
 	clientNewCmd := flag.NewFlagSet("newclient", flag.ExitOnError)
 	clientNewName := clientNewCmd.String("n", "default", "account name")
 
+	addressCmd := flag.NewFlagSet("address", flag.ExitOnError)
+	addressName := addressCmd.String("n", "default", "account name")
+
 	balanceCmd := flag.NewFlagSet("balance", flag.ExitOnError)
 	balanceName := balanceCmd.String("n", "default", "account name")
 	balancePort := balanceCmd.String("p", "8000", "port to send call")
@@ -56,6 +62,12 @@ func Run() error {
 	airdropName := airdropCmd.String("n", "default", "account name")
 	airdropAmount := airdropCmd.Uint64("a", 1, "airdrop amount")
 	airdropPort := airdropCmd.String("p", "8000", "port to send call")
+
+	transferCmd := flag.NewFlagSet("transfer", flag.ExitOnError)
+	transferName := transferCmd.String("n", "default", "account name")
+	transferAmount := transferCmd.Uint64("a", 1, "airdrop amount")
+	transferTo := transferCmd.String("t", "default", "address to")
+	transferPort := transferCmd.String("p", "8000", "port to send call")
 
 	fmt.Println()
 	switch os.Args[1] {
@@ -102,6 +114,17 @@ func Run() error {
 			}
 			_, err = wallets.NewWallet(*clientNewName)
 			return err
+		case "address":
+			err := addressCmd.Parse(os.Args[3:])
+			if err != nil {
+				exit()
+			}
+			w, err := wallets.NewWallet(*addressName)
+			if err != nil {
+				return err
+			}
+			pk := w.PublicKey()
+			fmt.Println(base58.Encode(pk))
 		case "balance":
 			err := balanceCmd.Parse(os.Args[3:])
 			if err != nil {
@@ -127,6 +150,18 @@ func Run() error {
 				return err
 			}
 			res, err := c.Airdrop(*airdropAmount, *airdropPort)
+			fmt.Println(res)
+			return err
+		case "transfer":
+			err := transferCmd.Parse(os.Args[3:])
+			if err != nil {
+				exit()
+			}
+			c, err := clients.NewClient(*transferName)
+			if err != nil {
+				return err
+			}
+			res, err := c.Transfer(*transferAmount, *transferTo, *transferPort)
 			fmt.Println(res)
 			return err
 		default:

@@ -84,7 +84,7 @@ func (sts *StorageService) Run() {
 
 func (sts *StorageService) FetchAllAccounts(mem memory.MemoryHandle) error {
 	i := 0
-	chCache := make([]<-chan *common.Result[accounts.AccountState], 0)
+	chCache := make([]<-chan *common.Result[*accounts.AccountState], 0)
 	err := sts.db.innerDb.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sts.accountsBucket)
 		c := b.Cursor()
@@ -118,7 +118,7 @@ func (sts *StorageService) FetchAccounts(
 	mem memory.MemoryHandle, pubKeys [][]byte,
 ) error {
 	iter := len(pubKeys)
-	chCache := make([]<-chan *common.Result[accounts.AccountState], 0, iter)
+	chCache := make([]<-chan *common.Result[*accounts.AccountState], 0, iter)
 	err := sts.db.innerDb.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sts.accountsBucket)
 		var err error
@@ -157,17 +157,17 @@ func (sts *StorageService) PushAccounts(
 	mem memory.MemoryHandle, pubKeys [][]byte,
 ) error {
 	iter := len(pubKeys)
-	chs := make([]<-chan *common.Result[accounts.AccountState], 0, iter)
+	chs := make([]<-chan *common.Result[*accounts.AccountState], 0, iter)
 	for i := 0; i < iter; i++ {
 		ch := mem.GetAccountState(pubKeys[i])
 		chs = append(chs, ch)
 	}
 
-	return sts.db.innerDb.Update(func(tx *bolt.Tx) error {
+	err := sts.db.innerDb.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sts.accountsBucket)
 		var err error
 		var enc []byte
-		var res *common.Result[accounts.AccountState]
+		var res *common.Result[*accounts.AccountState]
 		for i := 0; i < iter; i++ {
 			res = <-chs[i]
 			if res.Err != nil {
@@ -184,6 +184,12 @@ func (sts *StorageService) PushAccounts(
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	log.Println("database pushed")
+	return nil
 }
 
 func (sts *StorageService) Get(

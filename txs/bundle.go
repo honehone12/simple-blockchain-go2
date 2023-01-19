@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"simple-blockchain-go2/common/merkle"
+
+	"github.com/btcsuite/btcutil/base58"
 )
 
 type TxBundle struct {
@@ -29,6 +31,15 @@ func (txb *TxBundle) HashTransactions() ([]byte, error) {
 		return nil, err
 	}
 	return mTree.RootNode.Data, nil
+}
+
+func (txb *TxBundle) ToKeys() []string {
+	lenTx := len(txb.Transactions)
+	keys := make([]string, lenTx)
+	for i := 0; i < lenTx; i++ {
+		keys[i] = base58.Encode(txb.Transactions[i].Hash[:])
+	}
+	return keys
 }
 
 func (txb *TxBundle) Verify() bool {

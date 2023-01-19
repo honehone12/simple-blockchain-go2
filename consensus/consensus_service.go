@@ -2,7 +2,6 @@ package consensus
 
 import (
 	"bytes"
-	"encoding/json"
 	"log"
 	"math/big"
 	"simple-blockchain-go2/accounts/wallets"
@@ -38,7 +37,9 @@ type ConsensusService struct {
 	nextBlockProducer []byte
 	nextAggregator    []byte
 	finalizeCh        chan<- bool
-	numVotedOk        atomic.Uint64
+	blockCh           chan<- bool
+	numVoted          atomic.Int64
+	numVotedOk        atomic.Int64
 
 	peersStatus map[string]bool
 	badPeers    [][]byte
@@ -50,7 +51,7 @@ func NewConsensusService(
 	sync sync.SyncEventHandle,
 	bcInfo blockchain.BlockchainInfo,
 	wallet *wallets.Wallet,
-	exe executer.ExecuteHandle,
+	exe executer.ExecutionHandle,
 ) *ConsensusService {
 	return &ConsensusService{
 		p2pService:        p2p.NewP2pService(port, p2p.ConsensusNode),
@@ -64,7 +65,9 @@ func NewConsensusService(
 		nextBlockProducer: nil,
 		nextAggregator:    nil,
 		finalizeCh:        nil,
-		numVotedOk:        atomic.Uint64{},
+		blockCh:           nil,
+		numVoted:          atomic.Int64{},
+		numVotedOk:        atomic.Int64{},
 		peersStatus:       make(map[string]bool),
 		badPeers:          [][]byte{},
 	}
@@ -84,6 +87,7 @@ func (cs *ConsensusService) Run() {
 		},
 	)
 
+	cs.numVoted.Store(0)
 	cs.numVotedOk.Store(0)
 	t := time.NewTicker(SlotIdle)
 	go cs.reminder(t)
@@ -94,6 +98,8 @@ func (cs *ConsensusService) reset() {
 	cs.nextBlockProducer = nil
 	cs.nextAggregator = nil
 	cs.finalizeCh = nil
+	cs.blockCh = nil
+	cs.numVoted.Store(0)
 	cs.numVotedOk.Store(0)
 }
 
@@ -136,8 +142,15 @@ func (cs *ConsensusService) addToBadPeer(pk []byte) {
 	if !slices.ContainsFunc(cs.badPeers, func(p []byte) bool {
 		return bytes.Equal(pk, p)
 	}) {
+		log.Printf("%x is added to bad peers\n", pk)
 		cs.badPeers = append(cs.badPeers, pk)
 	}
+}
+
+func (cs *ConsensusService) ready() bool {
+	return (cs.nextBlockProducer != nil && cs.nextAggregator != nil) &&
+		cs.memHandle.LenTx() > 0 &&
+		cs.finalizeCh == nil
 }
 
 func (cs *ConsensusService) allPeerReady() bool {
@@ -175,7 +188,7 @@ func (cs *ConsensusService) reminder(ticker *time.Ticker) {
 			cs.decideCommittee()
 
 			// need to wait all peers are ready
-			if cs.allPeerReady() {
+			if cs.ready() && cs.allPeerReady() {
 				err := cs.broadcastStartBlockProcessing()
 				if err != nil {
 					cs.eCh <- err
@@ -184,7 +197,7 @@ func (cs *ConsensusService) reminder(ticker *time.Ticker) {
 
 				// if the node is producer
 				if bytes.Equal(cs.nextBlockProducer, cs.nodeWallet.PublicKey()) {
-					cs.finalizeCh, err = cs.produceBlock()
+					cs.finalizeCh, err = cs.proposeBlock()
 					if err != nil {
 						cs.eCh <- err
 					}
@@ -205,7 +218,7 @@ func (cs *ConsensusService) reminder(ticker *time.Ticker) {
 }
 
 func (cs *ConsensusService) decideCommittee() {
-	// sort nodes with ip4 address
+	// sort nodes with public key
 	// use hash for adding little bit fairness
 	slices.SortFunc(cs.nextValidators, func(a, b []byte) bool {
 		aInt := big.NewInt(0)
@@ -226,14 +239,103 @@ func (cs *ConsensusService) decideCommittee() {
 	cs.nextAggregator = cs.nextValidators[nextAggregatorIdx]
 }
 
-func (cs *ConsensusService) produceBlock() (chan<- bool, error) {
+func (cs *ConsensusService) aggregate(ok bool) {
+	if !bytes.Equal(cs.nextAggregator, cs.nodeWallet.PublicKey()) {
+		return
+	}
+
+	cs.numVoted.Add(1)
+	if ok {
+		cs.numVotedOk.Add(1)
+	}
+
+	numValidators := len(cs.nextValidators)
+	if numValidators%2 != 0 {
+		numValidators++
+	}
+	log.Printf(
+		"current vote status, yes: %d total: %d\n",
+		cs.numVotedOk.Load(), cs.numVoted.Load(),
+	)
+
+	if cs.numVoted.Load() == int64(numValidators)-1 {
+		if cs.numVotedOk.Load() > int64((numValidators/2)-1) {
+			cs.broadcastFinality(true)
+		} else {
+			cs.broadcastFinality(false)
+		}
+	}
+}
+
+func (cs *ConsensusService) Finalize(ok bool) {
+	if cs.finalizeCh != nil {
+		cs.finalizeCh <- ok
+	}
+	if cs.blockCh != nil {
+		cs.blockCh <- ok
+	}
+	cs.reset()
+}
+
+func (cs *ConsensusService) broadcastFinality(ok bool) error {
+	if !bytes.Equal(cs.nextAggregator, cs.nodeWallet.PublicKey()) {
+		return nil
+	}
+
+	vote := FinalizeMsg{
+		From:          cs.p2pService.Self(),
+		FromPublicKey: cs.nodeWallet.PublicKey(),
+		Height:        cs.blockchainInfo.NextHeight(),
+		Ok:            ok,
+	}
+	payload, err := p2p.PackPayload(
+		vote, byte(p2p.ConsensusMessage), byte(FinalizeMessage),
+	)
+	if err != nil {
+		return err
+	}
+
+	cs.p2pService.Broadcast(payload)
+	log.Println("broadcasting finality...")
+	// for self
+	cs.Finalize(ok)
+	return nil
+}
+
+func (cs *ConsensusService) vote(ok bool) error {
+	if bytes.Equal(cs.nextAggregator, cs.nodeWallet.PublicKey()) {
+		cs.aggregate(ok)
+	} else {
+		vote := VoteMsg{
+			From:          cs.p2pService.Self(),
+			FromPublicKey: cs.nodeWallet.PublicKey(),
+			Height:        cs.blockchainInfo.NextHeight(),
+			Ok:            ok,
+		}
+		payload, err := p2p.PackPayload(
+			vote, byte(p2p.ConsensusMessage), byte(VoteMessage),
+		)
+		if err != nil {
+			return err
+		}
+
+		cs.p2pService.Broadcast(payload)
+		log.Println("broadcasting vote...")
+		if !ok {
+			cs.addToBadPeer(cs.nextBlockProducer)
+		}
+	}
+	return nil
+}
+
+func (cs *ConsensusService) proposeBlock() (chan<- bool, error) {
 	blk, finCh, err := cs.producer.NewBlock(cs.eCh)
 	if err != nil {
 		return nil, err
 	}
-	self := cs.p2pService.Self()
+
 	msg := ProposeBlockMsg{
-		From:          self,
+		From:          cs.p2pService.Self(),
 		FromPublicKey: cs.nodeWallet.PublicKey(),
 		Block:         *blk,
 	}
@@ -244,14 +346,14 @@ func (cs *ConsensusService) produceBlock() (chan<- bool, error) {
 		return nil, err
 	}
 	log.Println("proposing block...")
-	cs.p2pService.Broadcast(payload, self)
+	cs.p2pService.Broadcast(payload)
+	cs.blockCh = cs.syncHandle.NewBlock(blk)
 	return finCh, nil
 }
 
 func (cs *ConsensusService) broadcastStartBlockProcessing() error {
-	self := cs.p2pService.Self()
 	msg := StartBlockProcessingMsg{
-		From:              self,
+		From:              cs.p2pService.Self(),
 		FromPublicKey:     cs.nodeWallet.PublicKey(),
 		NextBlockProducer: cs.nextBlockProducer,
 		NextAggregator:    cs.nextAggregator,
@@ -262,19 +364,16 @@ func (cs *ConsensusService) broadcastStartBlockProcessing() error {
 	if err != nil {
 		return err
 	}
-	cs.p2pService.Broadcast(payload, self)
+	cs.p2pService.Broadcast(payload)
 	return nil
 }
 
 func (cs *ConsensusService) broadcastGossip() error {
-	self := cs.p2pService.Self()
-	ready := (cs.nextBlockProducer != nil && cs.nextAggregator != nil) &&
-		cs.memHandle.LenTx() > 0
 	msg := GossipMsg{
-		From:          self,
+		From:          cs.p2pService.Self(),
 		FromPublicKey: cs.nodeWallet.PublicKey(),
 		IsSyncing:     cs.syncHandle.IsSyncing(),
-		IsReady:       ready,
+		IsReady:       cs.ready(),
 		NextHeight:    cs.blockchainInfo.NextHeight(),
 		NextEpoch:     cs.blockchainInfo.NextEpoch(),
 		NextSlot:      cs.blockchainInfo.NextSlot(),
@@ -287,7 +386,7 @@ func (cs *ConsensusService) broadcastGossip() error {
 		return err
 	}
 
-	cs.p2pService.Broadcast(payload, self)
+	cs.p2pService.Broadcast(payload)
 	return nil
 }
 
@@ -311,175 +410,4 @@ func (cs *ConsensusService) handleConsensusMessage(raw []byte) error {
 	default:
 		return nil
 	}
-}
-
-func (cs *ConsensusService) handleVote(raw []byte) error {
-	if !bytes.Equal(cs.nextAggregator, cs.nodeWallet.PublicKey()) {
-		return nil
-	}
-
-	msg := VoteMsg{}
-	err := json.Unmarshal(raw, &msg)
-	if err != nil {
-		return err
-	}
-	if !msg.Verify() {
-		return nil
-	}
-	if !slices.ContainsFunc(cs.nextValidators, func(pk []byte) bool {
-		return bytes.Equal(pk, msg.FromPublicKey)
-	}) {
-		return nil
-	}
-
-	if msg.Ok {
-		cs.numVotedOk.Add(1)
-	}
-
-	return nil
-}
-
-func (cs *ConsensusService) handleFinalize(raw []byte) error {
-	msg := FinalizeMsg{}
-	err := json.Unmarshal(raw, &msg)
-	if err != nil {
-		return err
-	}
-	if !msg.Verify() {
-		return nil
-	}
-	if !bytes.Equal(msg.FromPublicKey, cs.nextAggregator) {
-		cs.addToBadPeer(msg.FromPublicKey)
-		return nil
-	}
-
-	return nil
-}
-
-func (cs *ConsensusService) handleProposeBlock(raw []byte) error {
-	msg := ProposeBlockMsg{}
-	err := json.Unmarshal(raw, &msg)
-	if err != nil {
-		return err
-	}
-	if !msg.Verify() {
-		return nil
-	}
-	if !bytes.Equal(msg.FromPublicKey, cs.nextBlockProducer) {
-		cs.addToBadPeer(msg.FromPublicKey)
-		return nil
-	}
-
-	log.Printf("received block height: %d\n", msg.Block.Info.Height)
-
-	cs.finalizeCh, err = cs.producer.ExecuteTxs(
-		msg.Block.Bundle.Transactions, cs.eCh,
-	)
-	ok := true
-	if err != nil {
-		log.Printf("error occured: %s\n", err.Error())
-		ok = false
-	}
-
-	self := cs.p2pService.Self()
-	vote := VoteMsg{
-		From:          self,
-		FromPublicKey: cs.nodeWallet.PublicKey(),
-		Ok:            ok,
-	}
-	payload, err := p2p.PackPayload(
-		vote, byte(p2p.ConsensusMessage), byte(VoteMessage),
-	)
-	if err != nil {
-		return err
-	}
-	cs.p2pService.Broadcast(payload, self)
-	log.Println("broadcasting vote")
-	return nil
-}
-
-func (cs *ConsensusService) handleStartBlockProcessing(raw []byte) error {
-	msg := StartBlockProcessingMsg{}
-	err := json.Unmarshal(raw, &msg)
-	if err != nil {
-		return err
-	}
-	if !msg.Verify() {
-		return nil
-	}
-
-	if !(bytes.Equal(msg.NextBlockProducer, cs.nextBlockProducer) &&
-		bytes.Equal(msg.NextAggregator, cs.nextAggregator)) {
-
-		log.Printf("%x is added to bad peers\n", msg.FromPublicKey)
-		cs.addToBadPeer(msg.FromPublicKey)
-		return nil
-	}
-
-	log.Printf("confirmed comittee, peer: %s", msg.From.Ip4)
-	return nil
-}
-
-func (cs *ConsensusService) handleGossip(raw []byte) error {
-	if cs.syncHandle.IsSyncing() {
-		// this node does not go further
-		log.Println("syncing...")
-		return nil
-	}
-
-	msg := GossipMsg{}
-	err := json.Unmarshal(raw, &msg)
-	if err != nil {
-		return err
-	}
-	if !msg.Verify() {
-		return nil
-	}
-
-	if msg.IsSyncing {
-		// peer is syncing
-		return nil
-	}
-	if len(cs.badPeers) > 0 &&
-		slices.ContainsFunc(cs.badPeers, func(pk []byte) bool {
-			return bytes.Equal(msg.FromPublicKey, pk)
-		}) {
-
-		// peer is bad node
-		return nil
-	}
-
-	// TODO:
-	// add known peer from msg
-	// add bad peer from msg
-
-	selfNextHeight := cs.blockchainInfo.NextHeight()
-	if msg.NextHeight > selfNextHeight {
-		// need sync
-		log.Printf("node %d is behind %d\n", selfNextHeight, msg.NextHeight)
-		cs.syncHandle.StartSync(msg.NextHeight - 1)
-		return nil
-	} else if msg.NextHeight < selfNextHeight {
-		// this is from new node
-		log.Println("received lower height")
-		cs.removeFromNextValidators(msg.FromPublicKey)
-		return nil
-	}
-
-	if msg.NextEpoch != cs.blockchainInfo.NextEpoch() {
-		// this is not expected to happen normally
-		log.Println("recieved different epoch")
-		cs.removeFromNextValidators(msg.FromPublicKey)
-		return nil
-	}
-	if msg.NextSlot != cs.blockchainInfo.NextSlot() {
-		// this is not expected to happen normally
-		log.Println("recieved different slot")
-		cs.removeFromNextValidators(msg.FromPublicKey)
-		return nil
-	}
-
-	cs.peersStatus[msg.From.Ip4] = msg.IsReady
-	cs.addToNextValidators(msg.FromPublicKey)
-	return nil
 }

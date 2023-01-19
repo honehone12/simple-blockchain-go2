@@ -55,10 +55,16 @@ func (ps *P2pService) Send(to NodeInfo, data []byte) {
 }
 
 func (ps *P2pService) Broadcast(data []byte, except ...NodeInfo) {
-	for _, p := range ps.peers {
-		for _, exc := range except {
-			if !p.IsSameIp(exc) {
-				ps.transporter.Send(p, data)
+	if len(except) == 0 {
+		for _, p := range ps.peers {
+			ps.transporter.Send(p, data)
+		}
+	} else {
+		for _, p := range ps.peers {
+			for _, exc := range except {
+				if !p.IsSameIp(exc) {
+					ps.transporter.Send(p, data)
+				}
 			}
 		}
 	}

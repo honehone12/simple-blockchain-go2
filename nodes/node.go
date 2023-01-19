@@ -70,8 +70,12 @@ func (n *Node) SyncHandle() sync.SyncEventHandle {
 	return n.syncService
 }
 
-func (n *Node) ExecuteHandle() executer.ExecuteHandle {
+func (n *Node) ExecuteHandle() executer.ExecutionHandle {
 	return n.executer
+}
+
+func (n *Node) StorageHandle() storage.StorageHandle {
+	return n.storageSevice
 }
 
 func (n *Node) Run() {

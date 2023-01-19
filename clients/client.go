@@ -9,6 +9,8 @@ import (
 	"simple-blockchain-go2/common"
 	"simple-blockchain-go2/rpc"
 	"simple-blockchain-go2/txs"
+
+	"github.com/btcsuite/btcutil/base58"
 )
 
 type Client struct {
@@ -62,7 +64,36 @@ func (c *Client) Airdrop(amount uint64, port string) (string, error) {
 }
 
 func (c *Client) Transfer(amount uint64, to string, port string) (string, error) {
-	return "", nil
+	info, err := c.GetAccountInfo(port)
+	if err != nil {
+		return "", err
+	}
+	c.wallet.Init(info.Nonce, info.Balance)
+
+	param := rpc.TransferParam{
+		Amount: amount,
+		To:     base58.Decode(to),
+	}
+	encPara, err := json.Marshal(param)
+	if err != nil {
+		return "", err
+	}
+	call := rpc.NewCall(rpc.Transfer, encPara)
+	encCall, err := json.Marshal(call)
+	if err != nil {
+		return "", err
+	}
+	tx := txs.NewTransaction(encCall)
+	err = c.wallet.Sign(&tx)
+	if err != nil {
+		return "", err
+	}
+
+	res, err := c.sendTransaction(port, tx)
+	if err != nil {
+		return "", nil
+	}
+	return string(res), nil
 }
 
 func (c *Client) GetAccountInfo(port string) (*accounts.AccountState, error) {

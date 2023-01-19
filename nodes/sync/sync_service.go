@@ -25,6 +25,7 @@ type TxBroadcaster interface {
 type SyncEventHandle interface {
 	IsSyncing() bool
 	StartSync(targetHeight uint64)
+	NewBlock(blk *blocks.Block) chan<- bool
 }
 
 type SyncService struct {
@@ -94,6 +95,12 @@ func (sys *SyncService) BroadcastTx(tx *txs.Transaction, origin []p2p.NodeInfo) 
 	return nil
 }
 
+func (sys *SyncService) NewBlock(blk *blocks.Block) chan<- bool {
+	ch := make(chan bool)
+	go sys.waitForFinality(ch, blk)
+	return ch
+}
+
 func (sys *SyncService) StartSync(targetHeight uint64) {
 	// this very simple state machine can be problem
 	// if iterations are fast
@@ -102,6 +109,27 @@ func (sys *SyncService) StartSync(targetHeight uint64) {
 	}
 	sys.isSyncing.Swap(true)
 	go sys.sync(targetHeight)
+}
+
+func (sys *SyncService) waitForFinality(finCh <-chan bool, blk *blocks.Block) {
+	keys := blk.Bundle.ToKeys()
+	ok := <-finCh
+	if ok {
+		log.Println("putting block to storage")
+		resCh := sys.storageHandle.Put(storage.Blocks, blk)
+		res := <-resCh
+		if res.Err != nil {
+			sys.eCh <- res.Err
+			return
+		}
+
+		sys.memoryHandle.RemoveTxs(keys)
+
+		err := sys.blockStoredEvent.Event(blk)
+		if err != nil {
+			sys.eCh <- err
+		}
+	}
 }
 
 func (sys *SyncService) sync(target uint64) {

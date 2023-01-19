@@ -76,6 +76,7 @@ func (pbm *ProposeBlockMsg) Verify() bool {
 type VoteMsg struct {
 	From          p2p.NodeInfo
 	FromPublicKey []byte
+	Height        uint64
 	Ok            bool
 }
 
@@ -87,6 +88,7 @@ func (vm *VoteMsg) Verify() bool {
 type FinalizeMsg struct {
 	From          p2p.NodeInfo
 	FromPublicKey []byte
+	Height        uint64
 	Ok            bool
 }
 

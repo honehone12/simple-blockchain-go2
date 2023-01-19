@@ -30,7 +30,7 @@ type StateMemRequest struct {
 	RequestKind
 	PublicKey []byte
 	State     *accounts.AccountState
-	ResultCh  chan<- *common.Result[accounts.AccountState]
+	ResultCh  chan<- *common.Result[*accounts.AccountState]
 }
 
 type MemoryHandle interface {
@@ -42,14 +42,14 @@ type MemoryHandle interface {
 
 	PutAccountState(
 		key []byte, state *accounts.AccountState,
-	) <-chan *common.Result[accounts.AccountState]
-	GetAccountState(key []byte) <-chan *common.Result[accounts.AccountState]
+	) <-chan *common.Result[*accounts.AccountState]
+	GetAccountState(key []byte) <-chan *common.Result[*accounts.AccountState]
 	GetStateHash() ([]byte, error)
 }
 
 type MemoryService struct {
 	mempool  *Mempool
-	stateMem *MemoryDb[accounts.AccountState]
+	stateMem *MemoryDb[*accounts.AccountState]
 
 	txCh    chan MempoolRequest
 	stateCh chan StateMemRequest
@@ -58,12 +58,12 @@ type MemoryService struct {
 func NewMemoryService() *MemoryService {
 	return &MemoryService{
 		mempool: NewMempool(),
-		stateMem: NewMemoryDb(
-			accounts.AccountState{
+		stateMem: NewMemoryDb(func() *accounts.AccountState {
+			return &accounts.AccountState{
 				Nonce:   0,
 				Balance: 0,
-			},
-		),
+			}
+		}),
 		txCh:    make(chan MempoolRequest, 10),
 		stateCh: make(chan StateMemRequest, 10),
 	}
@@ -115,8 +115,8 @@ func (ms *MemoryService) GetStateHash() ([]byte, error) {
 
 func (ms *MemoryService) GetAccountState(
 	key []byte,
-) <-chan *common.Result[accounts.AccountState] {
-	resCh := make(chan *common.Result[accounts.AccountState])
+) <-chan *common.Result[*accounts.AccountState] {
+	resCh := make(chan *common.Result[*accounts.AccountState])
 	req := StateMemRequest{
 		RequestKind: Get,
 		PublicKey:   key,
@@ -129,8 +129,8 @@ func (ms *MemoryService) GetAccountState(
 
 func (ms *MemoryService) PutAccountState(
 	key []byte, state *accounts.AccountState,
-) <-chan *common.Result[accounts.AccountState] {
-	resCh := make(chan *common.Result[accounts.AccountState])
+) <-chan *common.Result[*accounts.AccountState] {
+	resCh := make(chan *common.Result[*accounts.AccountState])
 	req := StateMemRequest{
 		RequestKind: Put,
 		PublicKey:   key,
@@ -172,14 +172,14 @@ func (ms *MemoryService) handleState(req StateMemRequest) {
 		if req.PublicKey != nil && req.ResultCh != nil {
 			state, ok := ms.stateMem.Get(base58.Encode(req.PublicKey))
 			if ok {
-				req.ResultCh <- &common.Result[accounts.AccountState]{
-					Value: *state,
+				req.ResultCh <- &common.Result[*accounts.AccountState]{
+					Value: state,
 					Err:   nil,
 				}
 				return
 			} else {
-				req.ResultCh <- &common.Result[accounts.AccountState]{
-					Value: accounts.AccountState{
+				req.ResultCh <- &common.Result[*accounts.AccountState]{
+					Value: &accounts.AccountState{
 						Nonce:   0,
 						Balance: 0,
 					},
@@ -191,7 +191,7 @@ func (ms *MemoryService) handleState(req StateMemRequest) {
 	case Put:
 		if req.PublicKey != nil && req.State != nil {
 			ms.stateMem.Put(
-				base58.Encode(req.PublicKey), *req.State,
+				base58.Encode(req.PublicKey), req.State,
 			)
 		}
 	default:

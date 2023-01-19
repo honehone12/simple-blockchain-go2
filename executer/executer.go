@@ -21,25 +21,25 @@ type Executer struct {
 	faucet *Faucet
 }
 
-type ExecuteHandle interface {
+type ExecutionHandle interface {
 	Execute(
 		transanctions []txs.Transaction, errCh chan<- error,
 	) (chan<- bool, error)
 }
 
-type dirtyAccounts struct {
-	accounts [][]byte
+type publicKeys struct {
+	keys [][]byte
 }
 
-func newDirtyAccounts() *dirtyAccounts {
-	return &dirtyAccounts{accounts: make([][]byte, 0)}
+func newPublicKeys() *publicKeys {
+	return &publicKeys{keys: make([][]byte, 0)}
 }
 
-func (da *dirtyAccounts) add(pubKey []byte) {
-	if !slices.ContainsFunc(da.accounts, func(pk []byte) bool {
+func (pk *publicKeys) add(pubKey []byte) {
+	if !slices.ContainsFunc(pk.keys, func(pk []byte) bool {
 		return bytes.Equal(pubKey, pk)
 	}) {
-		da.accounts = append(da.accounts, pubKey)
+		pk.keys = append(pk.keys, pubKey)
 	}
 }
 
@@ -62,8 +62,9 @@ func (e *Executer) Execute(
 ) (chan<- bool, error) {
 	log.Println("executing transactions...")
 
-	dirty := newDirtyAccounts()
+	executed := newPublicKeys()
 	for _, tx := range transanctions {
+		dirty := newPublicKeys()
 		call := rpc.Call{}
 		err := json.Unmarshal(tx.InnerData.Data, &call)
 		if err != nil {
@@ -85,6 +86,7 @@ func (e *Executer) Execute(
 				call.Params,
 				tx.InnerData.PublicKey,
 				tx.InnerData.Nonce,
+				executed,
 				dirty,
 			)
 		case rpc.Transfer:
@@ -92,6 +94,7 @@ func (e *Executer) Execute(
 				call.Params,
 				tx.InnerData.PublicKey,
 				tx.InnerData.Nonce,
+				executed,
 				dirty,
 			)
 		default:
@@ -99,8 +102,6 @@ func (e *Executer) Execute(
 			continue
 		}
 		if err != nil {
-			// !!
-			// need to reset dirty account
 			er := e.revert(dirty, err)
 			if er != nil {
 				return nil, er
@@ -111,38 +112,37 @@ func (e *Executer) Execute(
 
 	log.Println("all execution done")
 	finCh := make(chan bool)
-	go e.waitForFinality(finCh, errCh, dirty)
+	go e.waitForFinality(finCh, errCh, executed)
 	return finCh, nil
 }
 
 func (e *Executer) waitForFinality(
 	finCh <-chan bool,
 	errCh chan<- error,
-	dirty *dirtyAccounts,
+	executed *publicKeys,
 ) {
+	log.Println("waiting for finality...")
 	ok := <-finCh
 	if ok {
-		// !!
-		// dirty is mistake
-		// need all account for change
-		err := e.storageHandle.PushAccounts(e.memoryHandle, dirty.accounts)
+		log.Println("pushing account changes")
+		err := e.storageHandle.PushAccounts(e.memoryHandle, executed.keys)
 		if err != nil {
-			er := e.revert(dirty, err)
+			er := e.revert(executed, err)
 			if er != nil {
 				errCh <- er
 			}
 		}
 	} else {
-		err := e.revert(dirty, errors.New("block was rejected"))
+		err := e.revert(executed, errors.New("block was rejected"))
 		if err != nil {
 			errCh <- err
 		}
 	}
 }
 
-func (e *Executer) revert(dirty *dirtyAccounts, prevError error) error {
+func (e *Executer) revert(dirty *publicKeys, prevError error) error {
 	log.Printf("error: %s reverting...\n", prevError.Error())
-	err := e.storageHandle.FetchAccounts(e.memoryHandle, dirty.accounts)
+	err := e.storageHandle.FetchAccounts(e.memoryHandle, dirty.keys)
 	if err != nil {
 		return fmt.Errorf(
 			"original error: %s, another error accoured on revert: %s",
@@ -155,7 +155,8 @@ func (e *Executer) revert(dirty *dirtyAccounts, prevError error) error {
 func (e *Executer) executeAirdrop(
 	rawParam []byte,
 	caller []byte, nonce uint64,
-	dirty *dirtyAccounts,
+	executed *publicKeys,
+	dirty *publicKeys,
 ) error {
 	log.Println("executing airdrop...")
 
@@ -181,6 +182,9 @@ func (e *Executer) executeAirdrop(
 		dirty.add(gen)
 		return err
 	}
+
+	executed.add(caller)
+	executed.add(gen)
 	return nil
 }
 
@@ -214,8 +218,8 @@ func (e *Executer) airdropImpl(
 		return errors.New("overflow")
 	}
 
-	fromCh = e.memoryHandle.PutAccountState(from, &fromState)
-	toCh = e.memoryHandle.PutAccountState(to, &toState)
+	fromCh = e.memoryHandle.PutAccountState(from, fromState)
+	toCh = e.memoryHandle.PutAccountState(to, toState)
 	<-fromCh
 	<-toCh
 	return nil
@@ -224,7 +228,8 @@ func (e *Executer) airdropImpl(
 func (e *Executer) executeTransfer(
 	rawParam []byte,
 	caller []byte, nonce uint64,
-	dirty *dirtyAccounts,
+	executed *publicKeys,
+	dirty *publicKeys,
 ) error {
 	log.Println("executing transfer")
 
@@ -247,6 +252,9 @@ func (e *Executer) executeTransfer(
 		dirty.add(param.To)
 		return err
 	}
+
+	executed.add(caller)
+	executed.add(param.To)
 	return nil
 }
 
@@ -280,8 +288,8 @@ func (e *Executer) transferImpl(
 		return errors.New("overflow")
 	}
 
-	fromCh = e.memoryHandle.PutAccountState(from, &fromState)
-	toCh = e.memoryHandle.PutAccountState(to, &toState)
+	fromCh = e.memoryHandle.PutAccountState(from, fromState)
+	toCh = e.memoryHandle.PutAccountState(to, toState)
 	<-fromCh
 	<-toCh
 	return nil

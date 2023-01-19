@@ -1,11 +1,13 @@
 package memory
 
 import (
+	"math/big"
 	"simple-blockchain-go2/common"
 	"simple-blockchain-go2/common/merkle"
 
 	"github.com/btcsuite/btcutil/base58"
 	"golang.org/x/crypto/sha3"
+	"golang.org/x/exp/slices"
 )
 
 const (
@@ -18,13 +20,11 @@ type DbContent interface {
 
 type dbBox[C DbContent] struct {
 	content C
-	node    merkle.MerkleNode
 }
 
 func newDbBox[C DbContent](data C) dbBox[C] {
 	return dbBox[C]{
 		content: data,
-		node:    merkle.MerkleNode{},
 	}
 }
 
@@ -36,19 +36,19 @@ func (box *dbBox[C]) getMerkleNode(pubKey string) (*merkle.MerkleNode, error) {
 	}
 	raw = append(raw, b...)
 	hash := sha3.Sum256(raw)
-	box.node.Data = hash[:]
-	return &box.node, nil
+	node := merkle.MerkleNode{Data: hash[:]}
+	return &node, nil
 }
 
 type MemoryDb[C DbContent] struct {
 	dbMap       map[string]dbBox[C]
-	fakeContent dbBox[C]
+	makeDefault func() C
 }
 
-func NewMemoryDb[C DbContent](fakeData C) *MemoryDb[C] {
+func NewMemoryDb[C DbContent](defaultFunc func() C) *MemoryDb[C] {
 	return &MemoryDb[C]{
 		dbMap:       make(map[string]dbBox[C]),
-		fakeContent: newDbBox(fakeData),
+		makeDefault: defaultFunc,
 	}
 }
 
@@ -64,37 +64,45 @@ func (md *MemoryDb[C]) Put(key string, data C) {
 	md.dbMap[key] = box
 }
 
-func (md *MemoryDb[C]) Get(key string) (*C, bool) {
+func (md *MemoryDb[C]) Get(key string) (C, bool) {
 	box, ok := md.dbMap[key]
 	if ok {
-		return &box.content, true
+		return box.content, true
 	}
-	return nil, false
+	return md.makeDefault(), false
 }
 
 func (md *MemoryDb[C]) GetMerkleNodes() ([]*merkle.MerkleNode, error) {
-	mapLen := len(md.dbMap)
-	total := common.NextPowerOf2(mapLen)
-	merkle := make([]*merkle.MerkleNode, total)
+	total := common.NextPowerOf2(len(md.dbMap))
+	nodes := make([]*merkle.MerkleNode, total)
 	i := 0
 	for k, box := range md.dbMap {
 		m, err := box.getMerkleNode(k)
 		if err != nil {
 			return nil, err
 		}
-		merkle[i] = m
+		nodes[i] = m
 		i++
 	}
 
+	slices.SortFunc(nodes[:i], func(a, b *merkle.MerkleNode) bool {
+		aInt := big.NewInt(0)
+		bInt := big.NewInt(0)
+		aInt.SetBytes(a.Data)
+		bInt.SetBytes(b.Data)
+		return aInt.Cmp(bInt) == -1
+	})
+
 	if i < total {
-		fake, err := md.fakeContent.getMerkleNode(fakeKey)
+		fakeBox := newDbBox(md.makeDefault())
+		fake, err := fakeBox.getMerkleNode(fakeKey)
 		if err != nil {
 			return nil, err
 		}
 		for i < total {
-			merkle[i] = fake
+			nodes[i] = fake
 			i++
 		}
 	}
-	return merkle, nil
+	return nodes, nil
 }
