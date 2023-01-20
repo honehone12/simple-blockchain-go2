@@ -17,6 +17,7 @@ type P2pService struct {
 	server      *Server
 	transporter *Transporter
 	handlerFn   func([]byte) error
+	onFailFn    func(NodeInfo)
 	peers       []NodeInfo
 	failCh      chan NodeInfo
 	eCh         chan error
@@ -27,6 +28,8 @@ func NewP2pService(port string, network NetworkKind) *P2pService {
 	return &P2pService{
 		server:      NewServer(port, network),
 		transporter: NewTransporter(onFail),
+		handlerFn:   nil,
+		onFailFn:    nil,
 		peers:       make([]NodeInfo, 0),
 		failCh:      onFail,
 		eCh:         make(chan error),
@@ -35,6 +38,10 @@ func NewP2pService(port string, network NetworkKind) *P2pService {
 
 func (ps *P2pService) E() <-chan error {
 	return ps.eCh
+}
+
+func (ps *P2pService) SetOnFail(fn func(NodeInfo)) {
+	ps.onFailFn = fn
 }
 
 func (ps *P2pService) Run(fn func([]byte) error) {
@@ -104,6 +111,9 @@ func (ps *P2pService) catch() {
 
 func (ps *P2pService) onFail() {
 	for failed := range ps.failCh {
+		if ps.onFailFn != nil {
+			ps.onFailFn(failed)
+		}
 		ps.removePeer(failed)
 	}
 }

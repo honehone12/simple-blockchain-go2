@@ -1,4 +1,4 @@
-package executer
+package executers
 
 import (
 	"bytes"
@@ -25,21 +25,25 @@ type ExecutionHandle interface {
 	Execute(
 		transanctions []txs.Transaction, errCh chan<- error,
 	) (chan<- bool, error)
+
+	ExecuteNow(
+		transactions []txs.Transaction,
+	) (*publicKeys, error)
 }
 
 type publicKeys struct {
-	keys [][]byte
+	Keys [][]byte
 }
 
 func newPublicKeys() *publicKeys {
-	return &publicKeys{keys: make([][]byte, 0)}
+	return &publicKeys{Keys: make([][]byte, 0)}
 }
 
 func (pk *publicKeys) add(pubKey []byte) {
-	if !slices.ContainsFunc(pk.keys, func(pk []byte) bool {
+	if !slices.ContainsFunc(pk.Keys, func(pk []byte) bool {
 		return bytes.Equal(pubKey, pk)
 	}) {
-		pk.keys = append(pk.keys, pubKey)
+		pk.Keys = append(pk.Keys, pubKey)
 	}
 }
 
@@ -58,15 +62,30 @@ func (e *Executer) Init() error {
 }
 
 func (e *Executer) Execute(
-	transanctions []txs.Transaction, errCh chan<- error,
+	transactions []txs.Transaction, errCh chan<- error,
 ) (chan<- bool, error) {
 	log.Println("executing transactions...")
 
+	executed, err := e.ExecuteNow(transactions)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Println("all execution done")
+	finCh := make(chan bool)
+	go e.waitForFinality(finCh, errCh, executed)
+	return finCh, nil
+}
+
+func (e *Executer) ExecuteNow(
+	transactions []txs.Transaction,
+) (*publicKeys, error) {
 	executed := newPublicKeys()
-	for _, tx := range transanctions {
+	iter := len(transactions)
+	for i := 0; i < iter; i++ {
 		dirty := newPublicKeys()
 		call := rpc.Call{}
-		err := json.Unmarshal(tx.InnerData.Data, &call)
+		err := json.Unmarshal(transactions[i].InnerData.Data, &call)
 		if err != nil {
 			log.Println(
 				"failed to unmarshal , should be removed before block creation: ",
@@ -84,16 +103,16 @@ func (e *Executer) Execute(
 		case rpc.Airdrop:
 			err = e.executeAirdrop(
 				call.Params,
-				tx.InnerData.PublicKey,
-				tx.InnerData.Nonce,
+				transactions[i].InnerData.PublicKey,
+				transactions[i].InnerData.Nonce,
 				executed,
 				dirty,
 			)
 		case rpc.Transfer:
 			err = e.executeTransfer(
 				call.Params,
-				tx.InnerData.PublicKey,
-				tx.InnerData.Nonce,
+				transactions[i].InnerData.PublicKey,
+				transactions[i].InnerData.Nonce,
 				executed,
 				dirty,
 			)
@@ -106,14 +125,12 @@ func (e *Executer) Execute(
 			if er != nil {
 				return nil, er
 			}
+			transactions[i].Status = false
 			log.Printf("reverted, original error: %s\n", err.Error())
 		}
+		transactions[i].Status = true
 	}
-
-	log.Println("all execution done")
-	finCh := make(chan bool)
-	go e.waitForFinality(finCh, errCh, executed)
-	return finCh, nil
+	return executed, nil
 }
 
 func (e *Executer) waitForFinality(
@@ -124,13 +141,9 @@ func (e *Executer) waitForFinality(
 	log.Println("waiting for finality...")
 	ok := <-finCh
 	if ok {
-		log.Println("pushing account changes")
-		err := e.storageHandle.PushAccounts(e.memoryHandle, executed.keys)
+		err := e.storageHandle.PushAccounts(e.memoryHandle, executed.Keys)
 		if err != nil {
-			er := e.revert(executed, err)
-			if er != nil {
-				errCh <- er
-			}
+			errCh <- err
 		}
 	} else {
 		err := e.revert(executed, errors.New("block was rejected"))
@@ -142,7 +155,7 @@ func (e *Executer) waitForFinality(
 
 func (e *Executer) revert(dirty *publicKeys, prevError error) error {
 	log.Printf("error: %s reverting...\n", prevError.Error())
-	err := e.storageHandle.FetchAccounts(e.memoryHandle, dirty.keys)
+	err := e.storageHandle.FetchAccounts(e.memoryHandle, dirty.Keys)
 	if err != nil {
 		return fmt.Errorf(
 			"original error: %s, another error accoured on revert: %s",

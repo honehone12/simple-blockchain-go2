@@ -10,6 +10,8 @@ type AccountState struct {
 	Balance uint64
 }
 
+// this is not used but only in faucet
+// all other accounts are pushed from memory
 type Account struct {
 	PublicKey []byte
 	State     AccountState

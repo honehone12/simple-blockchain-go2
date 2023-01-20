@@ -45,7 +45,7 @@ func (cs *ConsensusService) handleFinalize(raw []byte) error {
 		return nil
 	}
 
-	cs.Finalize(msg.Ok)
+	cs.finalize(msg.Ok)
 	return nil
 }
 
@@ -65,11 +65,12 @@ func (cs *ConsensusService) handleProposeBlock(raw []byte) error {
 
 	log.Printf("received block height: %d\n", msg.Block.Info.Height)
 	ok, ch, err := cs.producer.Verify(&msg.Block, cs.eCh)
-	cs.finalizeCh = ch
+	cs.accountCh = ch
 	if err != nil {
 		return err
 	}
 
+	cs.waitingFianlity.Store(true)
 	if !ok {
 		return cs.vote(ok)
 	} else {
@@ -88,18 +89,22 @@ func (cs *ConsensusService) handleStartBlockProcessing(raw []byte) error {
 		return nil
 	}
 
-	if !(bytes.Equal(msg.NextBlockProducer, cs.nextBlockProducer) &&
-		bytes.Equal(msg.NextAggregator, cs.nextAggregator)) {
+	if !bytes.Equal(msg.NextBlockProducer, cs.nextBlockProducer) ||
+		!bytes.Equal(msg.NextAggregator, cs.nextAggregator) {
 
+		log.Printf("disagreed comittee, peer: %s", msg.From.Ip4)
 		cs.addToBadPeer(msg.FromPublicKey)
 		return nil
 	}
 
-	log.Printf("confirmed comittee, peer: %s", msg.From.Ip4)
 	return nil
 }
 
 func (cs *ConsensusService) handleGossip(raw []byte) error {
+	if cs.waitingFianlity.Load() {
+		log.Println("waiting for finality, skipping gossip...")
+		return nil
+	}
 	if cs.syncHandle.IsSyncing() {
 		// this node does not go further
 		log.Println("syncing...")
@@ -140,7 +145,6 @@ func (cs *ConsensusService) handleGossip(raw []byte) error {
 		return nil
 	} else if msg.NextHeight < selfNextHeight {
 		// this is from new node
-		log.Println("received lower height")
 		cs.removeFromNextValidators(msg.FromPublicKey)
 		return nil
 	}

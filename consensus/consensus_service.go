@@ -7,7 +7,7 @@ import (
 	"simple-blockchain-go2/accounts/wallets"
 	"simple-blockchain-go2/blockchain"
 	"simple-blockchain-go2/common"
-	"simple-blockchain-go2/executer"
+	"simple-blockchain-go2/executers"
 	"simple-blockchain-go2/memory"
 	"simple-blockchain-go2/nodes/sync"
 	"simple-blockchain-go2/p2p"
@@ -27,7 +27,7 @@ type ConsensusService struct {
 	memHandle      memory.MemoryHandle
 	syncHandle     sync.SyncEventHandle
 	blockchainInfo blockchain.BlockchainInfo
-	producer       BlockProducer
+	producer       *executers.BlockProducer
 	nodeWallet     *wallets.Wallet
 	eCh            chan error
 
@@ -36,10 +36,13 @@ type ConsensusService struct {
 	nextValidators    [][]byte
 	nextBlockProducer []byte
 	nextAggregator    []byte
-	finalizeCh        chan<- bool
+	finalizeCh        chan bool
+	accountCh         chan<- bool
 	blockCh           chan<- bool
 	numVoted          atomic.Int64
 	numVotedOk        atomic.Int64
+	waitingFianlity   atomic.Bool
+	timer             *time.Timer
 
 	peersStatus map[string]bool
 	badPeers    [][]byte
@@ -51,21 +54,24 @@ func NewConsensusService(
 	sync sync.SyncEventHandle,
 	bcInfo blockchain.BlockchainInfo,
 	wallet *wallets.Wallet,
-	exe executer.ExecutionHandle,
+	exe executers.ExecutionHandle,
 ) *ConsensusService {
 	return &ConsensusService{
 		p2pService:        p2p.NewP2pService(port, p2p.ConsensusNode),
 		memHandle:         mem,
 		syncHandle:        sync,
 		blockchainInfo:    bcInfo,
-		producer:          *NewBlockProducer(mem, bcInfo, wallet, exe),
+		producer:          executers.NewBlockProducer(mem, bcInfo, wallet, exe),
 		nodeWallet:        wallet,
 		eCh:               make(chan error),
-		nextValidators:    [][]byte{},
+		nextValidators:    make([][]byte, 0),
 		nextBlockProducer: nil,
 		nextAggregator:    nil,
 		finalizeCh:        nil,
+		accountCh:         nil,
 		blockCh:           nil,
+		timer:             nil,
+		waitingFianlity:   atomic.Bool{},
 		numVoted:          atomic.Int64{},
 		numVotedOk:        atomic.Int64{},
 		peersStatus:       make(map[string]bool),
@@ -79,6 +85,7 @@ func (cs *ConsensusService) E() <-chan error {
 
 func (cs *ConsensusService) Run() {
 	go cs.catch()
+	cs.p2pService.SetOnFail(cs.onPeerDisapear)
 	cs.p2pService.Run(cs.handleConsensusMessage)
 	cs.p2pService.Discover(
 		p2p.DiscoveryConfig{
@@ -86,21 +93,28 @@ func (cs *ConsensusService) Run() {
 			PortMax: 5002,
 		},
 	)
-
 	cs.numVoted.Store(0)
 	cs.numVotedOk.Store(0)
+	cs.waitingFianlity.Store(false)
 	t := time.NewTicker(SlotIdle)
-	go cs.reminder(t)
+	go cs.loop(t)
+}
+
+func (cs *ConsensusService) onPeerDisapear(n p2p.NodeInfo) {
+	delete(cs.peersStatus, n.Ip4)
+	cs.reset()
 }
 
 func (cs *ConsensusService) reset() {
-	cs.nextValidators = [][]byte{}
+	cs.nextValidators = make([][]byte, 0)
 	cs.nextBlockProducer = nil
 	cs.nextAggregator = nil
 	cs.finalizeCh = nil
+	cs.accountCh = nil
 	cs.blockCh = nil
 	cs.numVoted.Store(0)
 	cs.numVotedOk.Store(0)
+	cs.waitingFianlity.Store(false)
 }
 
 func (cs *ConsensusService) catch() {
@@ -148,9 +162,7 @@ func (cs *ConsensusService) addToBadPeer(pk []byte) {
 }
 
 func (cs *ConsensusService) ready() bool {
-	return (cs.nextBlockProducer != nil && cs.nextAggregator != nil) &&
-		cs.memHandle.LenTx() > 0 &&
-		cs.finalizeCh == nil
+	return (cs.nextBlockProducer != nil && cs.nextAggregator != nil)
 }
 
 func (cs *ConsensusService) allPeerReady() bool {
@@ -162,28 +174,35 @@ func (cs *ConsensusService) allPeerReady() bool {
 	return true
 }
 
-func (cs *ConsensusService) reminder(ticker *time.Ticker) {
+func (cs *ConsensusService) loop(ticker *time.Ticker) {
 	defer ticker.Stop()
 	var tick int32 = 0
 
 	for range ticker.C {
-		tick++
-
 		if cs.p2pService.LenPeers() == 0 {
-			tick %= 3
+			continue
+		}
+		if cs.waitingFianlity.Load() {
+			log.Println("waiting for fainality, skipping tick...")
 			continue
 		}
 
-		if !cs.syncHandle.IsSyncing() && tick == 3 {
-			// add self
-			cs.addToNextValidators(cs.nodeWallet.PublicKey())
-			if len(cs.nextValidators) < 2 {
-				// need at least 2 validators
-				cs.reset()
-				tick %= 3
+		if tick < 2 {
+			err := cs.broadcastGossip()
+			if err != nil {
+				cs.eCh <- err
+				return
+			}
+		} else if tick == 2 {
+			if cs.syncHandle.IsSyncing() {
+				continue
+			}
+			if len(cs.nextValidators) == 0 {
 				continue
 			}
 
+			// add self
+			cs.addToNextValidators(cs.nodeWallet.PublicKey())
 			// expected to every node has same result
 			cs.decideCommittee()
 
@@ -195,25 +214,20 @@ func (cs *ConsensusService) reminder(ticker *time.Ticker) {
 					return
 				}
 
-				// if the node is producer
-				if bytes.Equal(cs.nextBlockProducer, cs.nodeWallet.PublicKey()) {
-					cs.finalizeCh, err = cs.proposeBlock()
-					if err != nil {
-						cs.eCh <- err
+				if cs.memHandle.LenTx() > 0 {
+					// if the node is producer
+					if bytes.Equal(cs.nextBlockProducer, cs.nodeWallet.PublicKey()) {
+						err = cs.proposeBlock()
+						if err != nil {
+							cs.eCh <- err
+						}
+						cs.waitingFianlity.Store(true)
+						cs.startTimer()
 					}
 				}
 			}
-			tick %= 3
-			continue
 		}
-
-		err := cs.broadcastGossip()
-		if err != nil {
-			cs.eCh <- err
-			return
-		}
-
-		tick %= 3
+		tick = (tick + 1) % 4
 	}
 }
 
@@ -250,16 +264,18 @@ func (cs *ConsensusService) aggregate(ok bool) {
 	}
 
 	numValidators := len(cs.nextValidators)
-	if numValidators%2 != 0 {
-		numValidators++
+	modTotal := numValidators
+	if modTotal%2 != 0 {
+		modTotal++
 	}
 	log.Printf(
 		"current vote status, yes: %d total: %d\n",
 		cs.numVotedOk.Load(), cs.numVoted.Load(),
 	)
 
+	// except block producer always vote yes
 	if cs.numVoted.Load() == int64(numValidators)-1 {
-		if cs.numVotedOk.Load() > int64((numValidators/2)-1) {
+		if cs.numVotedOk.Load() > int64((modTotal/2)-1) {
 			cs.broadcastFinality(true)
 		} else {
 			cs.broadcastFinality(false)
@@ -267,13 +283,33 @@ func (cs *ConsensusService) aggregate(ok bool) {
 	}
 }
 
-func (cs *ConsensusService) Finalize(ok bool) {
-	if cs.finalizeCh != nil {
-		cs.finalizeCh <- ok
+func (cs *ConsensusService) startTimer() {
+	log.Println("setting timeout")
+	cs.finalizeCh = make(chan bool)
+	cs.timer = time.NewTimer(time.Millisecond * common.FinalityTimeoutMilSec)
+	go cs.timeout()
+}
+
+func (cs *ConsensusService) timeout() {
+	select {
+	case <-cs.finalizeCh:
+		cs.timer.Stop()
+	case <-cs.timer.C:
+		log.Println("timeout, reject block...")
+		cs.finalize(false)
+	}
+}
+
+func (cs *ConsensusService) finalize(ok bool) {
+	cs.finalizeCh <- ok
+	log.Println("finalizing")
+	if cs.accountCh != nil {
+		cs.accountCh <- ok
 	}
 	if cs.blockCh != nil {
 		cs.blockCh <- ok
 	}
+
 	cs.reset()
 }
 
@@ -285,6 +321,7 @@ func (cs *ConsensusService) broadcastFinality(ok bool) error {
 	vote := FinalizeMsg{
 		From:          cs.p2pService.Self(),
 		FromPublicKey: cs.nodeWallet.PublicKey(),
+		Signature:     cs.nodeWallet.SignRaw(ConsensusMsgSigContent()),
 		Height:        cs.blockchainInfo.NextHeight(),
 		Ok:            ok,
 	}
@@ -298,17 +335,19 @@ func (cs *ConsensusService) broadcastFinality(ok bool) error {
 	cs.p2pService.Broadcast(payload)
 	log.Println("broadcasting finality...")
 	// for self
-	cs.Finalize(ok)
+	cs.finalize(ok)
 	return nil
 }
 
 func (cs *ConsensusService) vote(ok bool) error {
+	cs.startTimer()
 	if bytes.Equal(cs.nextAggregator, cs.nodeWallet.PublicKey()) {
 		cs.aggregate(ok)
 	} else {
 		vote := VoteMsg{
 			From:          cs.p2pService.Self(),
 			FromPublicKey: cs.nodeWallet.PublicKey(),
+			Signature:     cs.nodeWallet.SignRaw(ConsensusMsgSigContent()),
 			Height:        cs.blockchainInfo.NextHeight(),
 			Ok:            ok,
 		}
@@ -328,33 +367,36 @@ func (cs *ConsensusService) vote(ok bool) error {
 	return nil
 }
 
-func (cs *ConsensusService) proposeBlock() (chan<- bool, error) {
-	blk, finCh, err := cs.producer.NewBlock(cs.eCh)
+func (cs *ConsensusService) proposeBlock() error {
+	blk, ch, err := cs.producer.NewBlock(cs.eCh)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	msg := ProposeBlockMsg{
 		From:          cs.p2pService.Self(),
 		FromPublicKey: cs.nodeWallet.PublicKey(),
+		Signature:     cs.nodeWallet.SignRaw(ConsensusMsgSigContent()),
 		Block:         *blk,
 	}
 	payload, err := p2p.PackPayload(
 		msg, byte(p2p.ConsensusMessage), byte(ProposeBlockMessage),
 	)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	log.Println("proposing block...")
 	cs.p2pService.Broadcast(payload)
 	cs.blockCh = cs.syncHandle.NewBlock(blk)
-	return finCh, nil
+	cs.accountCh = ch
+	return nil
 }
 
 func (cs *ConsensusService) broadcastStartBlockProcessing() error {
 	msg := StartBlockProcessingMsg{
 		From:              cs.p2pService.Self(),
 		FromPublicKey:     cs.nodeWallet.PublicKey(),
+		Signature:         cs.nodeWallet.SignRaw(ConsensusMsgSigContent()),
 		NextBlockProducer: cs.nextBlockProducer,
 		NextAggregator:    cs.nextAggregator,
 	}
@@ -372,6 +414,7 @@ func (cs *ConsensusService) broadcastGossip() error {
 	msg := GossipMsg{
 		From:          cs.p2pService.Self(),
 		FromPublicKey: cs.nodeWallet.PublicKey(),
+		Signature:     cs.nodeWallet.SignRaw(ConsensusMsgSigContent()),
 		IsSyncing:     cs.syncHandle.IsSyncing(),
 		IsReady:       cs.ready(),
 		NextHeight:    cs.blockchainInfo.NextHeight(),

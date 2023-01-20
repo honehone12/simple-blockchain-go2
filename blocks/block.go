@@ -65,7 +65,7 @@ func (b *Block) HashBlock() error {
 
 func (bi *BlockInfo) Verify() bool {
 	return bi.PublicKey != nil && len(bi.PublicKey) == common.PublicKeySize &&
-		bi.Hash != nil && len(bi.Hash) == 32 &&
+		bi.Hash != nil && len(bi.Hash) == common.HashSize &&
 		bi.Signature != nil && len(bi.Signature) > 0 &&
 		bi.Timestamp > 0 &&
 		ed25519.Verify(bi.PublicKey, bi.Hash, bi.Signature)
@@ -73,8 +73,8 @@ func (bi *BlockInfo) Verify() bool {
 
 func (b *Block) Verify() bool {
 	return b.Bundle.Verify() &&
-		b.StateHash != nil && len(b.StateHash) == 32 &&
-		b.PreviousBlockHash != nil && len(b.PreviousBlockHash) == 32 &&
+		b.StateHash != nil && len(b.StateHash) == common.HashSize &&
+		b.PreviousBlockHash != nil && len(b.PreviousBlockHash) == common.HashSize &&
 		b.Info.Verify()
 }
 

@@ -188,7 +188,7 @@ func (sts *StorageService) PushAccounts(
 		return err
 	}
 
-	log.Println("database pushed")
+	log.Println("accounts database pushed")
 	return nil
 }
 

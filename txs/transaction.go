@@ -20,16 +20,22 @@ type TransactionData struct {
 }
 
 type Transaction struct {
-	Hash      [32]byte
+	Hash      []byte
 	InnerData TransactionData
+	Status    bool
 }
 
 func NewTransaction(data []byte) Transaction {
 	return Transaction{
+		Hash: nil,
 		InnerData: TransactionData{
 			Data:      data,
+			PublicKey: nil,
+			Nonce:     0,
+			Signature: nil,
 			Timestamp: time.Now().Unix(),
 		},
+		Status: false,
 	}
 }
 
@@ -39,7 +45,8 @@ func (tx *Transaction) CheckContents() bool {
 		len(tx.InnerData.Data) <= common.MaxPayloadSize &&
 		tx.InnerData.PublicKey != nil &&
 		len(tx.InnerData.PublicKey) == common.PublicKeySize &&
-		tx.InnerData.Signature != nil && len(tx.InnerData.Signature) > 0
+		tx.InnerData.Signature != nil && len(tx.InnerData.Signature) > 0 &&
+		tx.Hash != nil && len(tx.Hash) == common.HashSize
 }
 
 func (tx *Transaction) Verify() (bool, error) {
@@ -52,7 +59,7 @@ func (tx *Transaction) Verify() (bool, error) {
 		return false, err
 	}
 	hash := sha3.Sum256(enc)
-	if !bytes.Equal(hash[:], tx.Hash[:]) {
+	if !bytes.Equal(hash[:], tx.Hash) {
 		log.Println("transaction hash is broken")
 		return false, nil
 	}

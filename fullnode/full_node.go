@@ -5,6 +5,7 @@ import (
 	"simple-blockchain-go2/consensus"
 	"simple-blockchain-go2/memory"
 	"simple-blockchain-go2/nodes"
+	"time"
 )
 
 type FullNode struct {
@@ -47,6 +48,7 @@ func NewFullNode(
 }
 
 func (fn *FullNode) Run() error {
+	syncTime()
 	go fn.catch()
 	fn.memory.Run()
 	fn.consensus.Run()
@@ -54,6 +56,16 @@ func (fn *FullNode) Run() error {
 
 	err := <-fn.eCh
 	return err
+}
+
+func syncTime() {
+	now := time.Now()
+	nowSec := now.Unix()
+	nowMic := now.UnixMicro()
+	t := (nowSec + 1) * 1000000
+	w := t - nowMic
+	c := time.After(time.Microsecond * time.Duration(w))
+	<-c
 }
 
 func (fn *FullNode) catch() {

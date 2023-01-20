@@ -35,7 +35,7 @@ func (kp *KeyPair) Sign(tx *txs.Transaction) error {
 		return err
 	}
 	hash := sha3.Sum256(enc)
-	tx.Hash = hash
+	tx.Hash = hash[:]
 	return nil
 }
 

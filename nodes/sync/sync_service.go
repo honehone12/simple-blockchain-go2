@@ -7,6 +7,7 @@ import (
 	"simple-blockchain-go2/blockchain"
 	"simple-blockchain-go2/blocks"
 	"simple-blockchain-go2/common"
+	"simple-blockchain-go2/executers"
 	"simple-blockchain-go2/memory"
 	"simple-blockchain-go2/p2p"
 	"simple-blockchain-go2/rpc"
@@ -33,12 +34,13 @@ type SyncService struct {
 	storageHandle  storage.StorageHandle
 	memoryHandle   memory.MemoryHandle
 	blockchainInfo blockchain.BlockchainInfo
+	verifier       executers.BlockVerifier
 
 	chs map[uint64]chan common.Result[*blocks.Block]
 	eCh chan error
 
-	isSyncing        atomic.Bool
 	blockStoredEvent *common.BlockchainEvent[*blocks.Block]
+	isSyncing        atomic.Bool
 }
 
 func NewSyncService(
@@ -46,6 +48,7 @@ func NewSyncService(
 	storage storage.StorageHandle,
 	memory memory.MemoryHandle,
 	bcInfo blockchain.BlockchainInfo,
+	exe executers.ExecutionHandle,
 	onBlockStored *common.BlockchainEvent[*blocks.Block],
 ) *SyncService {
 	return &SyncService{
@@ -53,10 +56,11 @@ func NewSyncService(
 		storageHandle:    storage,
 		memoryHandle:     memory,
 		blockchainInfo:   bcInfo,
+		verifier:         *executers.NewBlockVerifier(memory, bcInfo, exe),
 		chs:              nil,
 		eCh:              make(chan error),
-		isSyncing:        atomic.Bool{},
 		blockStoredEvent: onBlockStored,
+		isSyncing:        atomic.Bool{},
 	}
 }
 
@@ -150,16 +154,17 @@ func (sys *SyncService) sync(target uint64) {
 
 		chLen := len(sys.chs)
 		for i := 0; i < chLen; i++ {
-			// if peer does not send block or peer sends wrong block,
-			// sync process will deadlock.
-			timeout := time.After(time.Second * 5)
-
+			timeout := time.NewTimer(time.Second * common.SyncTimeoutSeconds)
 			log.Printf("waiting for block %d...\n", cache)
 			select {
-			case <-timeout:
-				log.Println("timeout. returning...")
+			case <-timeout.C:
+				log.Println("timeout. will retry...")
+				// mark syncing false and retry on next gossip
+				sys.chs = nil
+				sys.isSyncing.Swap(false)
 				return
 			case res := <-sys.chs[cache]:
+				timeout.Stop()
 				if res.Err != nil {
 					sys.eCh <- res.Err
 					return
@@ -169,16 +174,61 @@ func (sys *SyncService) sync(target uint64) {
 					return
 				}
 
+				blk := res.Value
+				if blk.Info.Height > 0 {
+					if !sys.verifier.CheckBlockInfo(blk) {
+						sys.chs = nil
+						sys.isSyncing.Swap(false)
+						return
+					}
+
+					// execute block txs
+					// reverted execution does not return error
+					transactions := blk.Bundle.Transactions
+					executed, err := sys.verifier.ExecuteNow(transactions)
+					if err != nil {
+						sys.eCh <- err
+						return
+					}
+
+					ok, state, err := sys.verifier.CheckStateHash(blk)
+					if err != nil {
+						sys.eCh <- err
+						return
+					}
+					if !ok {
+						sys.chs = nil
+						sys.isSyncing.Swap(false)
+						return
+					}
+
+					ok, err = sys.verifier.CheckBlockHash(blk, state)
+					if err != nil {
+						sys.eCh <- err
+						return
+					}
+					if !ok {
+						sys.chs = nil
+						sys.isSyncing.Swap(false)
+						return
+					}
+
+					// push statemem to storage
+					err = sys.storageHandle.PushAccounts(sys.memoryHandle, executed.Keys)
+					if err != nil {
+						sys.eCh <- err
+						return
+					}
+				}
+
 				// put block
-				// TODO:
-				// execute block txs
-				putCh := sys.storageHandle.Put(storage.Blocks, res.Value)
+				putCh := sys.storageHandle.Put(storage.Blocks, blk)
 				putres := <-putCh
 				if putres.Err != nil {
 					sys.eCh <- putres.Err
 					return
 				}
-				err := sys.blockStoredEvent.Event(res.Value)
+				err := sys.blockStoredEvent.Event(blk)
 				if err != nil {
 					sys.eCh <- err
 					return
@@ -265,14 +315,21 @@ func (sys *SyncService) handleBlockRes(raw []byte) error {
 		}
 	} else {
 		// genesis block will not pass verification
-		if msg.Block.Info.Hash == nil || len(msg.Block.Info.Hash) != 32 ||
-			msg.Block.PreviousBlockHash == nil || len(msg.Block.PreviousBlockHash) != 32 ||
-			msg.Block.StateHash == nil || len(msg.Block.StateHash) != 32 {
+		if msg.Block.Info.Hash == nil ||
+			len(msg.Block.Info.Hash) != common.HashSize ||
+			msg.Block.PreviousBlockHash == nil ||
+			len(msg.Block.PreviousBlockHash) != common.HashSize ||
+			msg.Block.StateHash == nil ||
+			len(msg.Block.StateHash) != common.HashSize {
 
 			return nil
 		}
 	}
 
+	if sys.chs == nil {
+		log.Println("all channels are closed")
+		return nil
+	}
 	ch, ok := sys.chs[msg.Block.Info.Height]
 	if !ok {
 		log.Printf("could not find channel %d\n", msg.Block.Info.Height)

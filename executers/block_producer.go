@@ -1,4 +1,4 @@
-package consensus
+package executers
 
 import (
 	"bytes"
@@ -6,31 +6,44 @@ import (
 	"simple-blockchain-go2/accounts/wallets"
 	"simple-blockchain-go2/blockchain"
 	"simple-blockchain-go2/blocks"
-	"simple-blockchain-go2/executer"
 	"simple-blockchain-go2/memory"
 	"simple-blockchain-go2/txs"
 
 	"golang.org/x/crypto/sha3"
 )
 
-type BlockProducer struct {
+type BlockVerifier struct {
 	memoryHandle   memory.MemoryHandle
 	blockchainInfo blockchain.BlockchainInfo
-	wallet         *wallets.Wallet
-	executer       executer.ExecutionHandle
+	ExecutionHandle
+}
+
+type BlockProducer struct {
+	BlockVerifier
+	wallet *wallets.Wallet
+}
+
+func NewBlockVerifier(
+	mem memory.MemoryHandle,
+	bc blockchain.BlockchainInfo,
+	exe ExecutionHandle,
+) *BlockVerifier {
+	return &BlockVerifier{
+		memoryHandle:    mem,
+		blockchainInfo:  bc,
+		ExecutionHandle: exe,
+	}
 }
 
 func NewBlockProducer(
 	mem memory.MemoryHandle,
 	bc blockchain.BlockchainInfo,
 	w *wallets.Wallet,
-	exe executer.ExecutionHandle,
+	exe ExecutionHandle,
 ) *BlockProducer {
 	return &BlockProducer{
-		memoryHandle:   mem,
-		blockchainInfo: bc,
-		wallet:         w,
-		executer:       exe,
+		BlockVerifier: *NewBlockVerifier(mem, bc, exe),
+		wallet:        w,
 	}
 }
 
@@ -43,7 +56,7 @@ func (bp *BlockProducer) NewBlock(
 	bundle := txs.TxBundle{
 		Transactions: txsInBlock,
 	}
-	finCh, err := bp.executer.Execute(txsInBlock, errCh)
+	finCh, err := bp.Execute(txsInBlock, errCh)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -74,20 +87,12 @@ func (bp *BlockProducer) NewBlock(
 func (bp *BlockProducer) Verify(
 	blk *blocks.Block, errCh chan<- error,
 ) (bool, chan<- bool, error) {
-	//check height and prevhash
-	if blk.Info.Height != bp.blockchainInfo.NextHeight() {
-		log.Println("block height is wrong, rejected")
-		return false, nil, nil
-	}
-	if !bytes.Equal(
-		blk.PreviousBlockHash, bp.blockchainInfo.PreviousBlockHash(),
-	) {
-		log.Println("block previous hash is wrong, rejected")
+	if !bp.CheckBlockInfo(blk) {
 		return false, nil, nil
 	}
 
 	// execute transactions
-	finalizeCh, err := bp.executer.Execute(
+	finalizeCh, err := bp.Execute(
 		blk.Bundle.Transactions, errCh,
 	)
 	if err != nil {
@@ -96,24 +101,63 @@ func (bp *BlockProducer) Verify(
 		log.Printf("error occured on execution: %s\n", err.Error())
 		return false, finalizeCh, nil
 	}
-	// check state
-	// !!
-	// here still has bug from order of states
-	stateHash, err := bp.memoryHandle.GetStateHash()
+	ok, state, err := bp.CheckStateHash(blk)
 	if err != nil {
 		return false, finalizeCh, err
 	}
-	if !bytes.Equal(stateHash, blk.StateHash) {
-		log.Println("executed state is wrong, rejected")
+	if !ok {
 		return false, finalizeCh, nil
 	}
 
-	//check hash
-	txHash, err := blk.Bundle.HashTransactions()
+	ok, err = bp.CheckBlockHash(blk, state)
 	if err != nil {
 		return false, finalizeCh, err
 	}
-	prevHash := bp.blockchainInfo.PreviousBlockHash()
+	if !ok {
+		return false, finalizeCh, nil
+	}
+	return true, finalizeCh, nil
+}
+
+// check height and prevhash
+func (bv *BlockVerifier) CheckBlockInfo(blk *blocks.Block) bool {
+	if blk.Info.Height != bv.blockchainInfo.NextHeight() {
+		log.Println("block height is wrong, rejected")
+		return false
+	}
+	if !bytes.Equal(
+		blk.PreviousBlockHash, bv.blockchainInfo.PreviousBlockHash(),
+	) {
+		log.Println("block previous hash is wrong, rejected")
+		return false
+	}
+	return true
+}
+
+// check state
+func (bv *BlockVerifier) CheckStateHash(
+	blk *blocks.Block,
+) (bool, []byte, error) {
+	stateHash, err := bv.memoryHandle.GetStateHash()
+	if err != nil {
+		return false, nil, err
+	}
+	if !bytes.Equal(stateHash, blk.StateHash) {
+		log.Println("executed state is wrong, rejected")
+		return false, stateHash, nil
+	}
+	return true, stateHash, nil
+}
+
+// check hash
+func (bv *BlockVerifier) CheckBlockHash(
+	blk *blocks.Block, stateHash []byte,
+) (bool, error) {
+	txHash, err := blk.Bundle.HashTransactions()
+	if err != nil {
+		return false, err
+	}
+	prevHash := bv.blockchainInfo.PreviousBlockHash()
 	add := make(
 		[]byte, 0, len(txHash)+len(prevHash)+len(stateHash),
 	)
@@ -123,7 +167,7 @@ func (bp *BlockProducer) Verify(
 	hash := sha3.Sum256(add)
 	if !bytes.Equal(blk.Info.Hash, hash[:]) {
 		log.Println("hash is wrong, rejected")
-		return false, finalizeCh, nil
+		return false, nil
 	}
-	return true, finalizeCh, nil
+	return true, nil
 }

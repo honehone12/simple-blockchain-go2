@@ -6,7 +6,7 @@ import (
 	"simple-blockchain-go2/blockchain"
 	"simple-blockchain-go2/blocks"
 	"simple-blockchain-go2/common"
-	"simple-blockchain-go2/executer"
+	"simple-blockchain-go2/executers"
 	"simple-blockchain-go2/memory"
 	"simple-blockchain-go2/nodes/rpc"
 	"simple-blockchain-go2/nodes/sync"
@@ -19,7 +19,7 @@ type Node struct {
 	rpcServer     *rpc.RpcServer
 	storageSevice *storage.StorageService
 	memoryHandle  memory.MemoryHandle
-	executer      *executer.Executer
+	executer      *executers.Executer
 	eCh           chan error
 }
 
@@ -35,15 +35,16 @@ func NewNode(
 	}
 	onBlockStored := common.BlockchainEvent[*blocks.Block]{}
 	bc := blockchain.NewBlockchain()
+	exe := executers.NewExecuter(storage, memory)
 	sync := sync.NewSyncService(
 		syncPort,
 		storage,
 		memory,
 		bc,
+		exe,
 		&onBlockStored,
 	)
 	rpc := rpc.NewRpcServer(rpcPort, memory, storage, sync)
-	exe := executer.NewExecuter(storage, memory)
 
 	n := Node{
 		blockchain:    bc,
@@ -70,7 +71,7 @@ func (n *Node) SyncHandle() sync.SyncEventHandle {
 	return n.syncService
 }
 
-func (n *Node) ExecuteHandle() executer.ExecutionHandle {
+func (n *Node) ExecuteHandle() executers.ExecutionHandle {
 	return n.executer
 }
 

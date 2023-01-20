@@ -2,7 +2,6 @@ package memory
 
 import (
 	"errors"
-	"log"
 	"simple-blockchain-go2/accounts"
 	"simple-blockchain-go2/common"
 	"simple-blockchain-go2/common/merkle"
@@ -88,7 +87,6 @@ func (ms *MemoryService) AppendTx(tx *txs.Transaction) {
 		Keys:        nil,
 	}
 	ms.txCh <- req
-	log.Println("appending tx to mempool")
 }
 
 func (ms *MemoryService) GetTxsForBlock() []txs.Transaction {
