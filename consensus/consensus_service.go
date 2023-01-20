@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	SlotIdle time.Duration = time.Millisecond * 500
+	// 1sec total
+	SlotIdle time.Duration = time.Millisecond * 250
 )
 
 type ConsensusService struct {

@@ -13,6 +13,7 @@ const (
 )
 
 const (
-	SyncTimeoutSeconds    = 1
-	FinalityTimeoutMilSec = 900
+	SyncTimeoutSeconds = 1
+	// little smaller than 2tick
+	FinalityTimeoutMilSec = 400
 )
