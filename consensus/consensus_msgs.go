@@ -36,6 +36,11 @@ type GossipMsg struct {
 	NextEpoch     uint64
 	NextSlot      uint32
 
+	// TODO:
+	// known nodes
+	// genesis hash
+	// previous hash
+	// mempool size
 	BadNodes [][]byte
 }
 

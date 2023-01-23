@@ -12,6 +12,10 @@ import (
 	"github.com/btcsuite/btcutil/base58"
 )
 
+// TODO:
+// fast transactions
+// malicious node
+
 func printUsage() {
 	fmt.Println()
 	fmt.Println("usage:")
