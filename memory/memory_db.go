@@ -88,6 +88,11 @@ func (md *MemoryDb[C]) GetMerkleNodes() ([]*merkle.MerkleNode, error) {
 	slices.SortFunc(nodes[:i], func(a, b *merkle.MerkleNode) bool {
 		aInt := big.NewInt(0)
 		bInt := big.NewInt(0)
+
+		// !!
+		// this data is json bytes
+		// not sure having fixed length
+		// better using light hashing??
 		aInt.SetBytes(a.Data)
 		bInt.SetBytes(b.Data)
 		return aInt.Cmp(bInt) == -1

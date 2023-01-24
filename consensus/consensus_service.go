@@ -235,6 +235,10 @@ func (cs *ConsensusService) loop(ticker *time.Ticker) {
 func (cs *ConsensusService) decideCommittee() {
 	// sort nodes with public key
 	// use hash for adding little bit fairness
+
+	// !!
+	// sha256 is too much
+	// lighter hasing is ok
 	slices.SortFunc(cs.nextValidators, func(a, b []byte) bool {
 		aInt := big.NewInt(0)
 		ah := sha3.Sum256(a)
@@ -332,6 +336,13 @@ func (cs *ConsensusService) broadcastFinality(ok bool) error {
 	if err != nil {
 		return err
 	}
+
+	// !!
+	// block producer can be rewarded now
+
+	// !!
+	// should aggregator also sign to the block??
+	// (also other validators, like multisig ??)
 
 	cs.p2pService.Broadcast(payload)
 	log.Println("broadcasting finality...")
